@@ -510,7 +510,7 @@ function M.telescope_run()
           if vim.api.nvim_buf_is_valid(src_buf) then
             vim.api.nvim_set_current_buf(src_buf)
           end
-          overseer.run_template { name = entry[1] }
+          overseer.run_task { name = entry[1] }
         end)
         return true
       end,

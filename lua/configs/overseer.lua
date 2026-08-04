@@ -8,18 +8,16 @@
 -- Every task runs with cwd set to the file's directory so that generated
 -- artifacts (binaries, .s dumps, cachegrind.out.*, profile data, ...) land
 -- next to the source, matching what `%:r` / `%:e` would produce natively.
+--
+-- NOTE: this module intentionally does *not* `require("overseer")` at the top
+-- level. It is required by mappings.lua to reach M.telescope_run(); pulling in
+-- overseer here would trigger lazy-load before M is returned and recurse
+-- through the plugin's `config`. overseer is required lazily inside M.setup()
+-- (run from the plugin `config`) and M.telescope_run() instead.
 
-local overseer = require "overseer"
+local M = {}
+M._names = {} -- template names, populated by M.setup(), consumed by the picker
 
-overseer.setup {
-  templates = {}, -- we register our own below, skip the bundled defaults
-  task_list = {
-    direction = "bottom",
-    default_detail = 1,
-  },
-}
-
-local TAG = require("overseer.constants").TAG
 local STD = "-std=c++20"
 
 -- Paths derived from the *current* buffer, resolved at task-build time.
@@ -35,7 +33,23 @@ local function ctx()
   }
 end
 
--- Each def: { name, desc?, tags?, quickfix?, params?, build = fn(ctx, params) -> task }
+-- First executable name that actually exists on PATH (falls back to names[1]).
+local function pick(names)
+  for _, n in ipairs(names) do
+    if vim.fn.executable(n) == 1 then
+      return n
+    end
+  end
+  return names[1]
+end
+
+-- bcc tools ship as either `<name>-bpfcc` (Debian/Ubuntu) or `<name>`.
+local function has_bcc(base)
+  return vim.fn.executable(base .. "-bpfcc") == 1 or vim.fn.executable(base) == 1
+end
+
+-- Each def: { name, desc?, tags?, quickfix?, condition_callback?, params?,
+--             build = fn(ctx, params) -> task }
 -- build() returns a task-opts table; `cmd` may be a list (exec directly) or a
 -- string (run through the shell, so pipes/globs/`&&` work).
 local defs = {
@@ -45,7 +59,7 @@ local defs = {
   {
     name = "C++: compile debug",
     desc = "-g -O0 with the full warning set",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return {
@@ -58,7 +72,7 @@ local defs = {
   },
   {
     name = "C++: compile release O3",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return { cmd = { "g++", "-O3", "-march=native", STD, c.file, "-o", c.bin } }
@@ -66,7 +80,7 @@ local defs = {
   },
   {
     name = "C++: compile release O3 + LTO",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return { cmd = { "g++", "-O3", "-march=native", "-flto", STD, c.file, "-o", c.bin } }
@@ -75,7 +89,7 @@ local defs = {
   {
     name = "C++: compile fast-math (opt-in, breaks IEEE)",
     desc = "-ffast-math: HPC-only, keep separate since it breaks IEEE compliance",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return { cmd = { "g++", "-O3", "-march=native", "-ffast-math", STD, c.file, "-o", c.bin } }
@@ -83,7 +97,7 @@ local defs = {
   },
   {
     name = "C++: compile asan+ubsan",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return {
@@ -96,7 +110,7 @@ local defs = {
   },
   {
     name = "C++: compile tsan",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return { cmd = { "g++", "-g", "-O1", "-fsanitize=thread", STD, c.file, "-o", c.bin } }
@@ -105,7 +119,7 @@ local defs = {
   {
     name = "C++: compile assembly (.s dump)",
     desc = "-S -fverbose-asm, writes <file>.s next to the source",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     build = function(c)
       return { cmd = { "g++", "-O3", "-march=native", "-S", "-fverbose-asm", STD, c.file } }
     end,
@@ -113,7 +127,7 @@ local defs = {
   {
     name = "C++: compile vectorization report",
     desc = "-fopt-info-vec[-missed]: what got vectorized and what didn't",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return {
@@ -127,7 +141,7 @@ local defs = {
   {
     name = "C++: compile PGO instrument",
     desc = "-fprofile-generate: build, then run to collect a profile",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return { cmd = { "g++", "-O3", "-fprofile-generate", STD, c.file, "-o", c.bin } }
@@ -136,7 +150,7 @@ local defs = {
   {
     name = "C++: compile PGO optimized",
     desc = "-fprofile-use: rebuild using the collected profile",
-    tags = { TAG.BUILD },
+    tags = { "BUILD" },
     quickfix = true,
     build = function(c)
       return {
@@ -150,7 +164,7 @@ local defs = {
   -----------------------------------------------------------------------------
   {
     name = "C++: run",
-    tags = { TAG.RUN },
+    tags = { "RUN" },
     build = function(c)
       return { cmd = { c.bin } }
     end,
@@ -158,7 +172,7 @@ local defs = {
   {
     name = "C++: build and run (release O3)",
     desc = "Chain release-O3 compile + run in one task",
-    tags = { TAG.RUN },
+    tags = { "RUN" },
     build = function(c)
       return {
         cmd = string.format("g++ -O3 -march=native %s %s -o %s && %s", STD, c.efile, c.ebin, c.ebin),
@@ -235,6 +249,80 @@ local defs = {
     desc = "False-sharing / cache-line contention, record then report --stdio",
     build = function(c)
       return { cmd = string.format("perf c2c record -- %s && perf c2c report --stdio", c.ebin) }
+    end,
+  },
+  {
+    -- Non-TUI live profiler: --stdio drops the ncurses UI, `| cat` guarantees
+    -- no TTY interactivity, and the (optional) timeout makes it terminate.
+    name = "perf: top (stdio, live)",
+    desc = "perf top --stdio | cat, bounded by a duration so it self-terminates",
+    params = {
+      pid = { type = "string", name = "pid", desc = "attach to PID (blank = system-wide)", optional = true },
+      duration = {
+        type = "string",
+        name = "duration",
+        desc = "seconds before it stops (blank = run until stopped)",
+        default = "5",
+        optional = true,
+      },
+    },
+    build = function(_, p)
+      local top = "perf top --stdio"
+      if p.pid and p.pid ~= "" then
+        top = top .. " -p " .. vim.fn.shellescape(p.pid)
+      end
+      top = top .. " | cat"
+      if p.duration and p.duration ~= "" then
+        top = "timeout " .. vim.fn.shellescape(p.duration) .. " " .. top
+      end
+      return { cmd = top }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- perf-tools (Brendan Gregg's bcc scripts) -- shown only when installed
+  -----------------------------------------------------------------------------
+  {
+    name = "perf-tools: funccount (call counts)",
+    desc = "bcc funccount over the binary's user functions (needs root/bcc)",
+    condition_callback = function()
+      return has_bcc "funccount"
+    end,
+    params = {
+      pattern = {
+        type = "string",
+        name = "pattern",
+        desc = "function glob within the binary",
+        default = "*",
+        optional = true,
+      },
+    },
+    build = function(c, p)
+      local tool = pick { "funccount-bpfcc", "funccount" }
+      local pat = (p.pattern and p.pattern ~= "") and p.pattern or "*"
+      -- uprobe pattern form: '<binary>:<glob>'
+      return { cmd = { tool, c.bin .. ":" .. pat } }
+    end,
+  },
+  {
+    name = "perf-tools: funclatency (latency histogram)",
+    desc = "bcc funclatency: per-function latency for the binary (needs root/bcc)",
+    condition_callback = function()
+      return has_bcc "funclatency"
+    end,
+    params = {
+      func = {
+        type = "string",
+        name = "function",
+        desc = "function glob within the binary",
+        default = "*",
+        optional = true,
+      },
+    },
+    build = function(c, p)
+      local tool = pick { "funclatency-bpfcc", "funclatency" }
+      local f = (p.func and p.func ~= "") and p.func or "*"
+      return { cmd = { tool, c.bin .. ":" .. f } }
     end,
   },
 
@@ -336,23 +424,98 @@ local defs = {
   },
 }
 
-for _, def in ipairs(defs) do
-  overseer.register_template {
-    name = def.name,
-    desc = def.desc,
-    tags = def.tags,
-    params = def.params or {},
-    condition = { filetype = { "cpp", "c" } },
-    builder = function(params)
-      local c = ctx()
-      local task = def.build(c, params)
-      task.name = task.name or def.name
-      task.cwd = task.cwd or c.dir
-      if def.quickfix then
-        -- route compiler diagnostics into the quickfix list, open on error
-        task.components = task.components or { { "on_output_quickfix", open_on_error = true }, "default" }
-      end
-      return task
-    end,
+-- Run from the plugin `config` (see lua/plugins/init.lua). Registers every
+-- template and records its name for the telescope picker.
+function M.setup()
+  local overseer = require "overseer"
+
+  overseer.setup {
+    templates = {}, -- we register our own below, skip the bundled defaults
+    task_list = {
+      direction = "bottom",
+      default_detail = 1,
+    },
   }
+
+  for _, def in ipairs(defs) do
+    local condition = { filetype = { "cpp", "c" } }
+    if def.condition_callback then
+      condition.callback = def.condition_callback
+    end
+
+    overseer.register_template {
+      name = def.name,
+      desc = def.desc,
+      tags = def.tags,
+      params = def.params or {},
+      condition = condition,
+      builder = function(params)
+        local c = ctx()
+        local task = def.build(c, params)
+        task.name = task.name or def.name
+        task.cwd = task.cwd or c.dir
+        if def.quickfix then
+          -- route compiler diagnostics into the quickfix list, open on error
+          task.components = task.components
+            or { { "on_output_quickfix", open_on_error = true }, "default" }
+        end
+        return task
+      end,
+    }
+
+    M._names[#M._names + 1] = def.name
+  end
 end
+
+-- <leader>oo entry point: fuzzy-search the C/C++ templates in a Telescope
+-- picker and run the chosen one (overseer prompts for any params). Requiring
+-- overseer here lazy-loads the plugin, which runs M.setup() and fills _names.
+function M.telescope_run()
+  local ok_overseer, overseer = pcall(require, "overseer")
+  if not ok_overseer then
+    vim.notify("overseer.nvim is not available", vim.log.levels.ERROR)
+    return
+  end
+
+  local ok_telescope, pickers = pcall(require, "telescope.pickers")
+  if not ok_telescope then
+    -- No telescope: fall back to overseer's built-in vim.ui.select picker.
+    vim.notify("telescope not found, falling back to :OverseerRun", vim.log.levels.WARN)
+    vim.cmd "OverseerRun"
+    return
+  end
+
+  local finders = require "telescope.finders"
+  local conf = require("telescope.config").values
+  local actions = require "telescope.actions"
+  local action_state = require "telescope.actions.state"
+  local themes = require "telescope.themes"
+
+  -- Remember the buffer we launched from so the template builds against it,
+  -- not against telescope's prompt buffer.
+  local src_buf = vim.api.nvim_get_current_buf()
+
+  pickers
+    .new(themes.get_dropdown { layout_config = { width = 0.7, height = 0.6 } }, {
+      prompt_title = "Overseer · C/C++ tasks",
+      finder = finders.new_table { results = M._names },
+      sorter = conf.generic_sorter {},
+      attach_mappings = function(prompt_bufnr)
+        actions.select_default:replace(function()
+          local entry = action_state.get_selected_entry()
+          actions.close(prompt_bufnr)
+          if not entry then
+            return
+          end
+          if vim.api.nvim_buf_is_valid(src_buf) then
+            vim.api.nvim_set_current_buf(src_buf)
+          end
+          overseer.run_template { name = entry[1] }
+        end)
+        return true
+      end,
+    })
+    :find()
+end
+
+return M

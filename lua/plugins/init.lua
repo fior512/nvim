@@ -61,7 +61,7 @@ return {
       "OverseerInfo", "OverseerBuild", "OverseerRunCmd", "OverseerClearCache",
     },
     config = function()
-      require "configs.overseer"
+      require("configs.overseer").setup()
     end,
   },
   {

@@ -21,3 +21,8 @@ vim.keymap.set({ "n", "v" }, "<S-Right>", function() bounded_word_motion(true) e
 vim.keymap.set({ "n", "v" }, "<S-Left>", function() bounded_word_motion(false) end)
 
 -- map({ "n", "i", "v" }, "<C-s>", "<cmd> w <cr>")
+-- Overseer: compile / run / perf / valgrind / clang-tidy / rr task runner
+map("n", "<leader>oo", "<cmd>OverseerRun<cr>", { desc = "Overseer pick & run task" })
+map("n", "<leader>ot", "<cmd>OverseerToggle<cr>", { desc = "Overseer toggle task list" })
+map("n", "<leader>oa", "<cmd>OverseerQuickAction<cr>", { desc = "Overseer quick action on recent task" })
+map("n", "<leader>oi", "<cmd>OverseerInfo<cr>", { desc = "Overseer info / debug" })

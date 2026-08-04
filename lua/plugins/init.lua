@@ -55,6 +55,16 @@ return {
     },
   },
   {
+    "stevearc/overseer.nvim",
+    cmd = {
+      "OverseerRun", "OverseerToggle", "OverseerQuickAction", "OverseerTaskAction",
+      "OverseerInfo", "OverseerBuild", "OverseerRunCmd", "OverseerClearCache",
+    },
+    config = function()
+      require "configs.overseer"
+    end,
+  },
+  {
     "nvim-lualine/lualine.nvim",
     event = "VeryLazy",
     opts = {

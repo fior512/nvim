@@ -176,6 +176,26 @@ local MCA_STRIP = "sed -E "
   .. "-e '/^[[:space:]]*nop/d' "
   .. "-e '/^[[:space:]]*(j[a-z]*|call|ret[a-z]*|loop[a-z]*)([[:space:]]|$)/d'"
 
+-- llvm-mca's "Critical sequence" view sits between the summary/bottleneck
+-- section and the -all-stats aggregate tables (Dispatch/Scheduler/Retire/
+-- Register File stats), so mca is split into two tasks instead of one
+-- mixed dump. MCA_DROP_CRITSEQ removes the whole critical-sequence table
+-- (used by "mca: throughput", which keeps the aggregate stats). Detects
+-- the table by indentation: every row in it is either blank, indented, or
+-- a "+----" connector; the next real section header starts at column 0.
+local MCA_DROP_CRITSEQ = "awk '"
+  .. "/^Critical sequence/ { skip = 1; next } "
+  .. "skip && ($0 ~ /^[[:space:]]/ || $0 ~ /^$/ || $0 ~ /\\+----/) { next } "
+  .. "{ skip = 0; print }'"
+
+-- Most critical-sequence rows carry no annotation at all: only the ones
+-- marked with a "+----" connector explain a stall (register or resource
+-- dependency). Used by "mca: critical path", which drops -all-stats so
+-- nothing follows the critical-sequence table (safe to filter to end).
+local MCA_CRITSEQ_ONLY = "awk '/^Critical sequence/{in_seq=1} "
+  .. "{ if (!in_seq) { print; next } "
+  .. "if ($0 ~ /\\+----/ || $0 ~ /Dependency Information/ || $0 ~ /^Critical sequence/ || $0 ~ /^$/) print }'"
+
 -- Flag presets for "C++: compile". Each entry is { mode name, extra g++
 -- flags, whether to emit -o <bin> }. asm-dump skips -o since -S writes
 -- <file>.s next to the source. pgo-generate/pgo-use stay separate modes:
@@ -332,30 +352,52 @@ local defs = {
   {
     -- Self-contained like c2c below: records fresh into /tmp/perf.data
     -- each run instead of depending on a separate record task.
+    -- Without --percent-limit, perf report lists every symbol it ever
+    -- saw a sample for, including kernel/library noise at 0.00% overhead:
+    -- 700+ entries on a real run, only the top ~20 carrying any signal.
     name = "perf: report",
     needs_bin = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
         cmd = string.format(
-          "perf record -o /tmp/perf.data -- %s > /dev/null && PAGER=cat perf report -i /tmp/perf.data --stdio",
+          "perf record -o /tmp/perf.data -- %s > /dev/null "
+            .. "&& PAGER=cat perf report -i /tmp/perf.data --stdio --percent-limit 0.5",
           ebin
         ),
       }
     end,
   },
   {
+    -- A symbol narrows perf annotate to one function, shown in full: a
+    -- single function is naturally bounded, and every line stays in its
+    -- real sequence so the surrounding code still explains why a hot
+    -- instruction is hot. Without a symbol, --percent-limit is perf's own
+    -- function-selection cutoff: which functions get annotated at all,
+    -- not which lines inside a function survive. Neither path strips
+    -- lines out of a function's middle the way a line-level percent
+    -- filter would.
     name = "perf: annotate",
-    desc = "Optionally focus a single symbol",
+    desc = "Give a symbol for one full function, or set min-percent to cap which functions get annotated",
     needs_bin = true,
     params = {
-      symbol = { type = "string", name = "symbol", desc = "function symbol (blank = all)", optional = true },
+      symbol = { type = "string", name = "symbol", desc = "function symbol (blank = all functions above min-percent)", optional = true },
+      min_percent = {
+        type = "string",
+        name = "min-percent",
+        desc = "skip functions under this overhead percent (ignored if symbol is set)",
+        default = "2",
+        optional = true,
+      },
     },
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local annotate = "perf annotate -i /tmp/perf.data"
       if p.symbol and p.symbol ~= "" then
         annotate = annotate .. " " .. vim.fn.shellescape(p.symbol)
+      else
+        local limit = (p.min_percent and p.min_percent ~= "") and p.min_percent or "2"
+        annotate = annotate .. " --percent-limit " .. vim.fn.shellescape(limit)
       end
       annotate = annotate .. " --stdio"
       return {
@@ -364,8 +406,12 @@ local defs = {
     end,
   },
   {
+    -- One line per sampled event by design (this is the flamegraph
+    -- feedstock, not meant to be read directly): 20K+ lines on a real
+    -- run. Full output still goes to a file for actual tool use; only a
+    -- head sample is shown here.
     name = "perf: script",
-    desc = "Raw dump, feeds flamegraph tooling",
+    desc = "Raw dump, feeds flamegraph tooling. Full output written to file, only a head sample shown",
     needs_bin = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
@@ -373,7 +419,10 @@ local defs = {
       -- overseer's task pane looks like a real tty to it.
       return {
         cmd = string.format(
-          "perf record -o /tmp/perf.data -- %s > /dev/null && PAGER=cat perf script -i /tmp/perf.data",
+          "perf record -o /tmp/perf.data -- %s > /dev/null "
+            .. "&& PAGER=cat perf script -i /tmp/perf.data > /tmp/perf-script.out "
+            .. "&& echo \"output: /tmp/perf-script.out ($(wc -l < /tmp/perf-script.out) lines total, showing first 200)\" "
+            .. "&& head -200 /tmp/perf-script.out",
           ebin
         ),
       }
@@ -521,6 +570,21 @@ local defs = {
     end,
   },
   {
+    -- Plain objdump listing of one symbol: no gdb, no -g needed, no
+    -- source interleaving, no normalization. Distinct from "asm:
+    -- disassemble" above (gdb, source-interleaved, needs debug info): this
+    -- is the fast raw dump, addresses and mnemonics only.
+    name = "asm: dump",
+    desc = "Raw objdump listing of one symbol, addresses + mnemonics only",
+    needs_bin = true,
+    params = SYMBOL_PARAM,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      local sym = (p.symbol and p.symbol ~= "") and p.symbol or "main"
+      return { cmd = objdump_cmd(ebin, sym) }
+    end,
+  },
+  {
     name = "asm: create snapshot",
     desc = "Capture normalized disassembly before an edit; diff after rebuild instead of reproducing build flags",
     needs_bin = true,
@@ -601,8 +665,11 @@ local defs = {
   -- mca / uica: static throughput modeling on a disassembled symbol
   -----------------------------------------------------------------------------
   {
+    -- Split from the critical-path view below for readability: aggregate
+    -- stats and a per-instruction critical-path trace don't read well
+    -- mixed in one dump, and each needs different mca flags to stay small.
     name = "mca: throughput",
-    desc = "Port pressure, dispatch stalls, critical path. llvm-mca on the normalized disassembly",
+    desc = "Port pressure, dispatch/scheduler/retire stats. llvm-mca on the normalized disassembly",
     condition_callback = function()
       return vim.fn.executable "llvm-mca" == 1
     end,
@@ -611,15 +678,44 @@ local defs = {
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local sym = (p.symbol and p.symbol ~= "") and p.symbol or "main"
-      -- No -timeline: it prints a per-cycle pipeline diagram per
-      -- instruction per iteration, thousands of lines on a whole function.
-      -- -bottleneck-analysis/-all-stats give the useful summary numbers.
+      -- No -timeline, -instruction-info=false, -resource-pressure=false:
+      -- each is a per-instruction listing (thousands of lines on a whole
+      -- function). MCA_DROP_CRITSEQ removes the critical-sequence table
+      -- too (its own task below), leaving just the summary and the
+      -- -all-stats aggregate tables.
       return {
         cmd = string.format(
           "%s | %s | { echo '.intel_syntax noprefix'; cat -; } | "
-            .. "llvm-mca -mcpu=native -iterations=100 -bottleneck-analysis -all-stats",
+            .. "llvm-mca -mcpu=native -iterations=100 -bottleneck-analysis -all-stats "
+            .. "-instruction-info=false -resource-pressure=false | %s",
           objdump_cmd(ebin, sym),
-          MCA_STRIP
+          MCA_STRIP,
+          MCA_DROP_CRITSEQ
+        ),
+      }
+    end,
+  },
+  {
+    -- No -all-stats: with it off, nothing follows the critical-sequence
+    -- table, so MCA_CRITSEQ_ONLY can safely filter to end of output.
+    name = "mca: critical path",
+    desc = "Dependency chain that bounds throughput. llvm-mca critical-sequence view, annotated rows only",
+    condition_callback = function()
+      return vim.fn.executable "llvm-mca" == 1
+    end,
+    needs_bin = true,
+    params = SYMBOL_PARAM,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      local sym = (p.symbol and p.symbol ~= "") and p.symbol or "main"
+      return {
+        cmd = string.format(
+          "%s | %s | { echo '.intel_syntax noprefix'; cat -; } | "
+            .. "llvm-mca -mcpu=native -iterations=100 -bottleneck-analysis "
+            .. "-instruction-info=false -resource-pressure=false | %s",
+          objdump_cmd(ebin, sym),
+          MCA_STRIP,
+          MCA_CRITSEQ_ONLY
         ),
       }
     end,
@@ -1035,7 +1131,10 @@ function M.setup()
             info[#info + 1] = shorten_display(l)
           end
         end
-        local preamble = "printf '%s\\n' " .. table.concat(vim.tbl_map(vim.fn.shellescape, info), " ")
+        -- %s\n\n: a blank line after each preamble line (command, bin
+        -- age, any info_lines) and one more before the command's own
+        -- output starts, so the sections don't run together.
+        local preamble = "printf '%s\\n\\n' " .. table.concat(vim.tbl_map(vim.fn.shellescape, info), " ")
         task.cmd = preamble .. " && " .. shell_cmd
 
         return task

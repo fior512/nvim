@@ -316,6 +316,27 @@ end
 -- piped snippet started at).
 local CTAGS_EXTRACT_RANGE_AWK = [==[{ lines[NR] = $0; last = NR } END { first = target; while (first > 1) { prev = lines[first - 1]; if (prev ~ /^[[:space:]]*template[[:space:]]*</ || prev ~ /^[[:space:]]*requires\y/ || prev ~ /^[[:space:]]*\[\[.*\]\][[:space:]]*$/) { first = first - 1 } else { break } } depth = 0; started = 0; for (i = first; i <= last; i++) { line = lines[i]; if (i >= target) { n = gsub(/{/, "{", line); m = gsub(/}/, "}", line); depth += n - m; if (depth > 0) started = 1; if (started && depth == 0) { print first" "i; exit } } } print first" "last }]==]
 
+-- bcc's funclatency/funccount read the ELF symbol table directly (no
+-- demangling): a C++ function's real symbol is mangled
+-- (_Z17SIMD_fnv1a_Search...), so typing the readable name straight into
+-- bcc fails with "Could not find X in binary". Resolves a readable/
+-- demangled search term to its actual raw symbol instead: matches a text
+-- symbol (T/t/W/w -- global, local/static, or weak; "t" specifically
+-- covers `static` functions, which a T-only filter would silently miss)
+-- whose demangled name (nm -C) contains the term as a COMPLETE identifier
+-- (word-boundary match, same as "codebase: call sites"'s rg pattern) --
+-- not a plain substring match: "fnv1a" as a bare substring would also
+-- match inside "SIMD_fnv1a_Search" and silently resolve to the wrong
+-- function, which is exactly what happened before this was word-boundary
+-- anchored. On no exact match, lists substring-only candidates as a hint
+-- (e.g. "did you mean SIMD_fnv1a_Search") without silently using one --
+-- small `static` functions are also routinely inlined away entirely at
+-- -O3 and have no symbol at all, which a hint can't fix but should at
+-- least explain. Plain C-linkage names like "main" already match as-is,
+-- nothing to translate. Expects $bin and $func set by the caller; sets
+-- $mangled or exits with an explanation.
+local RESOLVE_SYMBOL_SH = [==[addr=$(nm -C "$bin" 2>/dev/null | awk -v f="$func" '$2 ~ /^[TtWw]$/ { name=$0; sub(/^[0-9a-f]+ +[A-Za-z] +/, "", name); if (name ~ ("\\<" f "\\>")) { print $1; exit } }'); if [ -z "$addr" ]; then echo "no function named exactly '$func' found in $bin (it may have been inlined away at this optimization level, especially if it's a small 'static' function)"; hint=$(nm -C "$bin" 2>/dev/null | awk -v f="$func" '$2 ~ /^[TtWw]$/ { name=$0; sub(/^[0-9a-f]+ +[A-Za-z] +/, "", name); if (index(name, f) > 0) print name }' | head -3); if [ -n "$hint" ]; then echo "closest matches (not used automatically):"; echo "$hint"; else echo "try: nm -C $bin | grep -i '$func'"; fi; exit 1; fi; mangled=$(nm "$bin" 2>/dev/null | awk -v a="$addr" '$1==a { print $3; exit }'); if [ -z "$mangled" ]; then echo "resolved address $addr for '$func' but found no matching raw symbol (unexpected)"; exit 1; fi]==]
+
 -- For diffing/snapshots: strips address/byte-offset prefixes, collapses
 -- compiler-generated .L labels, drops .cfi_ directives and padding nops,
 -- and blurs long literal addresses so diffs stay quiet across rebuilds.
@@ -815,53 +836,98 @@ local defs = {
   -- bcc (Brendan Gregg's bpf tracing scripts), shown only when installed
   -----------------------------------------------------------------------------
   {
-    -- Without a trailing duration, bcc tools run until Ctrl-C and only
-    -- print on exit, which looks like a stuck "pending" task in overseer.
+    -- Without a duration, bcc tools run until Ctrl-C and only print on
+    -- exit, which looks like a stuck "pending" task in overseer. funccount
+    -- only attaches uprobes and counts, it never launches the target
+    -- itself, so it sees nothing unless something is calling those
+    -- functions during the window: "sudo -v" is its own statement (";",
+    -- not "&&") so it fully blocks in the foreground on the password
+    -- prompt first (a combined "sudo -v && ... &" backgrounds the whole
+    -- chain including sudo -v, letting the rest of the script race ahead
+    -- of the still-prompting sudo -- verified that exact race before
+    -- fixing it).
+    --
+    -- Stops as soon as the binary finishes rather than making the user
+    -- guess a duration that outlasts it: -d/duration here is a safety
+    -- ceiling for a hung binary, not the real stop signal. "man sudo"
+    -- documents that sudo relays SIGINT to its child when sent by a user
+    -- process (which our own "kill -INT" is) over a pty (which overseer's
+    -- task pane is); verified with a compiled program that installs its
+    -- own SIGINT handler (matching how bcc's own "Hit Ctrl-C to exit"
+    -- implies it behaves) that a backgrounded job does receive and act on
+    -- kill -INT immediately from a non-interactive script.
     name = "bcc: funccount",
-    desc = "bcc funccount over the binary's user functions (needs root/bcc)",
+    desc = "Runs the binary while attached, stops as soon as it exits: bcc funccount over its functions (needs root/bcc)",
     condition_callback = function()
       return has_bcc "funccount"
     end,
     needs_bin = true,
+    takes_args = true,
     params = {
       pattern = {
         type = "string",
         name = "pattern",
-        desc = "function glob within the binary",
+        desc = "function name or glob within the binary; a plain name (no * or ?) is resolved from its readable form to the binary's real symbol automatically",
         default = "*",
         optional = true,
       },
       duration = {
         type = "string",
         name = "duration",
-        desc = "seconds before it self-terminates and prints",
-        default = "5",
+        desc = "safety ceiling in seconds in case the binary hangs; the trace normally stops right when the binary exits, this rarely needs changing",
+        default = "300",
         optional = true,
       },
+    },
+    prompts = {
+      { key = "pattern", label = "Function name or glob (blank = *): ", required = false },
     },
     build = function(c, p)
       local tool = pick { "funccount-bpfcc", "funccount" }
       local pat = (p.pattern and p.pattern ~= "") and p.pattern or "*"
-      local dur = (p.duration and p.duration ~= "") and p.duration or "5"
-      local bin = resolve_bin(c, p)
-      -- uprobe pattern form: '<binary>:<glob>'.
+      local ceiling = (p.duration and p.duration ~= "") and p.duration or "300"
+      local bin, ebin = resolve_bin(c, p)
+      -- A glob (contains * or ?) is passed straight through to bcc as-is,
+      -- same raw-symbol-table matching as before; a plain name goes
+      -- through RESOLVE_SYMBOL_SH like funclatency does, since bcc can't
+      -- match a readable C++ name against the mangled symbol table any
+      -- other way.
+      local target_expr
+      if pat:find "[*?]" then
+        target_expr = "mangled=" .. vim.fn.shellescape(pat)
+      else
+        target_expr = "func=" .. vim.fn.shellescape(pat) .. "; " .. RESOLVE_SYMBOL_SH
+      end
+      -- uprobe pattern form: '<binary>:<glob-or-symbol>'.
       -- sudo: eBPF loading needs CAP_BPF/CAP_SYS_ADMIN and a raised
       -- RLIMIT_MEMLOCK; overseer's task pane is a real pty so sudo can
       -- prompt for the password there.
-      return { cmd = { "sudo", tool, bin .. ":" .. pat, dur } }
+      return {
+        cmd = string.format(
+          "sudo -v; bin=%s; %s; sudo %s \"$bin:$mangled\" %s & FLPID=$!; sleep 0.3; %s%s > /dev/null 2>&1; bin_status=$?; "
+            .. "echo \"binary finished (exit $bin_status), stopping tracer...\"; sleep 0.2; "
+            .. "sudo kill -INT \"$FLPID\" 2>/dev/null; wait \"$FLPID\"",
+          vim.fn.shellescape(bin),
+          target_expr,
+          tool,
+          vim.fn.shellescape(ceiling),
+          ebin,
+          resolve_args(p)
+        ),
+      }
     end,
   },
   {
-    -- funclatency only attaches a uprobe and waits, it never launches the
-    -- target. "no data returned" usually means the traced function was
-    -- never called during the window: run the binary elsewhere while this
-    -- task is active.
+    -- Same "runs the binary itself while attached" fix as funccount above.
+    -- Same "runs the binary itself while attached, stops when it exits"
+    -- fix as funccount above.
     name = "bcc: funclatency",
-    desc = "bcc funclatency: attaches + waits, run the binary yourself elsewhere during the window (needs root/bcc)",
+    desc = "Runs the binary while attached, stops as soon as it exits: bcc funclatency histogram for one function (needs root/bcc)",
     condition_callback = function()
       return has_bcc "funclatency"
     end,
     needs_bin = true,
+    takes_args = true,
     params = {
       -- The libbpf-tools rewrite of funclatency (bcc-libbpf-tools on
       -- Arch/EndeavourOS) takes a single exact PROGRAM:FUNCTION symbol, no
@@ -870,24 +936,42 @@ local defs = {
       func = {
         type = "string",
         name = "function",
-        desc = "exact function symbol within the binary (no globs)",
+        desc = "function name (readable form is fine, e.g. SIMD_fnv1a_Search: resolved to the binary's real symbol automatically)",
         default = "main",
         optional = true,
       },
       duration = {
         type = "string",
         name = "duration",
-        desc = "seconds before it self-terminates and prints",
-        default = "5",
+        desc = "safety ceiling in seconds in case the binary hangs; the trace normally stops right when the binary exits, this rarely needs changing",
+        default = "300",
         optional = true,
       },
+    },
+    prompts = {
+      { key = "func", label = "Function to trace (blank = main): ", required = false },
     },
     build = function(c, p)
       local tool = pick { "funclatency-bpfcc", "funclatency" }
       local f = (p.func and p.func ~= "") and p.func or "main"
-      local dur = (p.duration and p.duration ~= "") and p.duration or "5"
-      local bin = resolve_bin(c, p)
-      return { cmd = { "sudo", tool, "-d", dur, bin .. ":" .. f } }
+      local ceiling = (p.duration and p.duration ~= "") and p.duration or "300"
+      local bin, ebin = resolve_bin(c, p)
+      -- $bin_status: see "bcc: funccount" above for why this is captured
+      -- and surfaced rather than run silently.
+      return {
+        cmd = string.format(
+          "sudo -v; bin=%s; func=%s; %s; sudo %s -d %s \"$bin:$mangled\" & FLPID=$!; sleep 0.3; %s%s > /dev/null 2>&1; bin_status=$?; "
+            .. "echo \"binary finished (exit $bin_status), stopping tracer...\"; sleep 0.2; "
+            .. "sudo kill -INT \"$FLPID\" 2>/dev/null; wait \"$FLPID\"",
+          vim.fn.shellescape(bin),
+          vim.fn.shellescape(f),
+          RESOLVE_SYMBOL_SH,
+          tool,
+          vim.fn.shellescape(ceiling),
+          ebin,
+          resolve_args(p)
+        ),
+      }
     end,
   },
 

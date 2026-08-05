@@ -5,7 +5,6 @@ return {
     opts = require "configs.conform",
   },
 
-  -- These are some examples, uncomment them if you want to see them work!
   {
     "neovim/nvim-lspconfig",
     config = function()
@@ -57,8 +56,6 @@ return {
   {
     "stevearc/overseer.nvim",
     cmd = {
-      -- OverseerQuickAction isn't a real command in this overseer version
-      -- (only OverseerTaskAction is) -- dropped it, it was dead weight.
       "OverseerRun", "OverseerToggle", "OverseerTaskAction",
       "OverseerInfo", "OverseerBuild", "OverseerRunCmd", "OverseerClearCache",
     },

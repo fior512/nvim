@@ -47,20 +47,14 @@
     Operator                  = { fg = "#4c4c4a" },
     LspInlayHint = { fg = "#3a3833", bg = "NONE", italic = true },
 
-    -- zenbones_custom never defines its own Telescope/picker colors, so the
-    -- selected row falls back to a barely-different near-black bg, and
-    -- floating windows have no visible border. Accent = sand/beige rather
-    -- than the pink used elsewhere; borders are a dimmer/desaturated sand
-    -- (this theme's highlights are solid colors, not real alpha, so "low
-    -- opacity" is approximated by muting the tone rather than blending it).
+    -- zenbones_custom has no Telescope colors of its own: selection/border
+    -- fall back to near-black. Accent set to sand instead of the pink used
+    -- elsewhere; borders are a dimmer sand tone.
     TelescopeSelection       = { fg = "#ecdfc8", bg = "#4a4232", bold = true },
     TelescopeSelectionCaret  = { fg = "#c9a876", bg = "#4a4232", bold = true },
     TelescopeMultiSelection  = { fg = "#ecdfc8", bg = "#3a3a4a" },
     TelescopeMatching        = { fg = "#c9a876", bold = true },
     TelescopePromptPrefix    = { fg = "#c9a876" },
-    -- base46's default theme integration puts a pink bg (#d0918d) on the
-    -- title box specifically; swap it (and the preview title, for
-    -- consistency) to sand.
     TelescopePromptTitle     = { fg = "#040403", bg = "#c9a876", bold = true },
     TelescopeResultsTitle    = { fg = "#040403", bg = "#c9a876", bold = true },
     TelescopePreviewTitle    = { fg = "#040403", bg = "#c9a876", bold = true },
@@ -71,8 +65,8 @@
     CursorLine                = { bg = "#3a3230" },
   },
 
-  -- diagnostic virtual text, blended ~45% toward the bg so it reads as shaded
-  -- (signs + underlines keep their full-strength colors)
+  -- diagnostic virtual text, blended toward the bg; signs/underlines keep
+  -- full-strength colors
   hl_add = {
     DiagnosticVirtualTextError = { fg = "#604341", bg = "NONE", italic = true },
     DiagnosticVirtualTextWarn  = { fg = "#544c3e", bg = "NONE", italic = true },
@@ -80,11 +74,5 @@
     DiagnosticVirtualTextHint  = { fg = "#4c4953", bg = "NONE", italic = true },
   },
 }
--- M.nvdash = { load_on_startup = true }
-  -- M.ui = {
-    --       tabufline = {
-      --          lazyload = false
-      --      }
-      -- }
 
-      return M
+return M

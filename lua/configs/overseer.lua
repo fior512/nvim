@@ -1,12 +1,12 @@
--- Overseer task templates for single-file C/C++ (HPC) workflows.
+-- Overseer task templates for C/C++ (HPC) workflows.
 --
--- Placeholder equivalence with classic vim expansions:
---   %    = ctx.file (absolute path to the current buffer)
---   %:r  = ctx.bin  (absolute path with the extension stripped)
---   %:h  = ctx.dir  (directory holding the current buffer)
---
--- Every task runs with cwd set to the file's directory so generated
--- artifacts (binaries, .s dumps, profile data) land next to the source.
+-- Two kinds of defs:
+--   compile/build tasks operate on the current buffer (ctx.file/.bin/.dir,
+--   classic vim %, %:r, %:h expansions), require filetype cpp/c, and cwd to
+--   the buffer's directory.
+--   needs_bin = true tasks (perf, valgrind, mca, asm, ...) take an explicit
+--   "binary" param instead, work without any C/C++ buffer open, and cwd to
+--   Neovim's own cwd (project root).
 --
 -- This module does not `require("overseer")` at the top level: it is
 -- required by mappings.lua to reach M.telescope_run(), and pulling in
@@ -16,7 +16,12 @@
 
 local M = {}
 M._names = {} -- template names, populated by M.setup(), consumed by the picker
-M._needs_bin = {} -- name -> true for defs that need a "binary" param
+-- name -> ordered list of { key, label, completion?, default? } prompts.
+-- Every def that needs input from the user goes through the same chained
+-- vim.ui.input flow in the custom telescope picker below: only the fields
+-- asked differ (binary+args, a symbol, two file paths, ...), never the
+-- mechanism.
+M._prompts = {}
 
 local STD = "-std=c++20"
 local CLANG_TIDY_CHECKS = "clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,modernize-*"
@@ -65,17 +70,118 @@ local function cpu_vendor()
   return "unknown"
 end
 
--- Tools that operate on an already-built binary can't assume "<file>:r" is
--- the right executable: justfile/CMake/etc. projects build elsewhere under
--- a different name. defs with needs_bin = true get a required "binary"
--- param so overseer always prompts for the real path; blank falls back to
--- the "<file>:r" guess.
-local function resolve_bin(c, p)
-  local bin = c.bin
-  if p and p.bin and p.bin ~= "" then
-    bin = vim.fn.expand(p.bin)
+-- bat ships its own fixed palettes; none of them is this config's actual
+-- colorscheme. Generates a bat .tmTheme from the *live* highlight groups
+-- instead, so "codebase: find definition" (the only task piping through
+-- bat) renders in the same colors as a normal code buffer, not an
+-- approximation. Re-synced on every invocation of that task (cheap, and
+-- picks up a mid-session :colorscheme change) rather than cached.
+local BAT_THEME_NAME = "NvimSync"
+local BAT_THEME_SCOPES = {
+  { "comment", { "@comment", "Comment" } },
+  { "string", { "@string", "String" } },
+  { "constant.numeric", { "@number", "Number", "Constant" } },
+  { "constant.language", { "@boolean", "Boolean", "Constant" } },
+  { "keyword, keyword.control", { "@keyword", "Keyword", "Conditional", "Repeat", "Statement" } },
+  { "keyword.operator", { "@operator", "Operator" } },
+  { "storage.type, storage.modifier, entity.name.type, support.type", { "@type", "Type", "StorageClass", "Structure" } },
+  { "entity.name.function", { "@function", "Function" } },
+  { "variable, variable.parameter", { "@variable", "Identifier" } },
+  { "meta.preprocessor, keyword.control.directive", { "Macro", "PreProc" } },
+  { "punctuation", { "Delimiter", "Special" } },
+}
+
+local function hl_fg(name, depth)
+  depth = depth or 0
+  if depth > 6 then
+    return nil
   end
+  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name })
+  if not ok or not hl then
+    return nil
+  end
+  if hl.fg then
+    return string.format("#%06x", hl.fg)
+  end
+  if hl.link then
+    return hl_fg(hl.link, depth + 1)
+  end
+  return nil
+end
+
+local function first_fg(names)
+  for _, n in ipairs(names) do
+    local c = hl_fg(n)
+    if c then
+      return c
+    end
+  end
+  return nil
+end
+
+-- Writes the .tmTheme and rebuilds bat's cache; returns the theme name to
+-- pass as --theme, or nil if bat isn't installed.
+local function sync_bat_theme()
+  if vim.fn.executable "bat" == 0 then
+    return nil
+  end
+  local ok_hl, normal = pcall(vim.api.nvim_get_hl, 0, { name = "Normal" })
+  local bg = (ok_hl and normal and normal.bg) and string.format("#%06x", normal.bg) or "#000000"
+  local fg = (ok_hl and normal and normal.fg) and string.format("#%06x", normal.fg) or "#ffffff"
+
+  local entries = {
+    string.format(
+      "<dict><key>settings</key><dict><key>background</key><string>%s</string>"
+        .. "<key>foreground</key><string>%s</string></dict></dict>",
+      bg,
+      fg
+    ),
+  }
+  for _, scope in ipairs(BAT_THEME_SCOPES) do
+    local selector, groups = scope[1], scope[2]
+    local color = first_fg(groups)
+    if color then
+      entries[#entries + 1] = string.format(
+        "<dict><key>scope</key><string>%s</string><key>settings</key>"
+          .. "<dict><key>foreground</key><string>%s</string></dict></dict>",
+        selector,
+        color
+      )
+    end
+  end
+
+  local xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    .. "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+    .. "<plist version=\"1.0\"><dict><key>name</key><string>"
+    .. BAT_THEME_NAME
+    .. "</string><key>settings</key><array>"
+    .. table.concat(entries, "\n")
+    .. "</array></dict></plist>\n"
+
+  local theme_dir = vim.fn.expand "~/.config/bat/themes"
+  vim.fn.mkdir(theme_dir, "p")
+  vim.fn.writefile(vim.split(xml, "\n"), theme_dir .. "/" .. BAT_THEME_NAME .. ".tmTheme")
+  vim.fn.system "bat cache --build"
+  return BAT_THEME_NAME
+end
+
+-- Tools that operate on an already-built binary can't assume the current
+-- buffer's "<file>:r" is the right executable: justfile/CMake/etc. projects
+-- build elsewhere under a different name. defs with needs_bin = true get a
+-- required "binary" param instead, independent of any open buffer.
+local function resolve_bin(_, p)
+  local bin = vim.fn.expand(p.bin)
   return bin, vim.fn.shellescape(bin)
+end
+
+-- defs with takes_args = true get an optional "args" param, appended
+-- verbatim (unescaped: the user's own text is the shell's argv, quoting is
+-- theirs to control) right after the binary. Blank means no arguments.
+local function resolve_args(p)
+  if p and p.args and p.args ~= "" then
+    return " " .. p.args
+  end
+  return ""
 end
 
 -- "<date> (<age> ago)" for a file's mtime, or "not found". Shows how old a
@@ -134,6 +240,8 @@ end
 -- or pager.
 local ASM_SNAP_DIR = "/tmp/asm-snap"
 local BLOATY_SNAP_DIR = "/tmp/bloaty-snap"
+local PERF_SNAP_DIR = "/tmp/perf-snap"
+local OUTPUT_SNAP_DIR = "/tmp/output-snap"
 
 local SYMBOL_PARAM = {
   symbol = { type = "string", name = "symbol", desc = "function symbol (blank = whole binary)", optional = true },
@@ -154,6 +262,59 @@ local function objdump_cmd(ebin, sym)
   end
   return cmd .. " " .. ebin
 end
+
+-- git's own diff-highlight (ships with git, not always on PATH) turns a
+-- normal line-per-line diff into full "-old line" / "+new line" pairs with
+-- the actually-changed substring additionally reverse-video highlighted
+-- within each: line-per-line context plus a pointer to what changed,
+-- rather than git's --word-diff merging old/new into one line. Falls back
+-- to --word-diff=plain (bracketed [-old-]/{+new+} markers, still readable
+-- without color) if diff-highlight isn't found anywhere on this machine.
+local function find_diff_highlight()
+  if vim.fn.executable "diff-highlight" == 1 then
+    return "diff-highlight"
+  end
+  local candidates = {
+    "/usr/share/git/diff-highlight/diff-highlight",
+    "/usr/share/git-core/contrib/diff-highlight/diff-highlight",
+    "/usr/local/share/git-core/contrib/diff-highlight/diff-highlight",
+  }
+  for _, path in ipairs(candidates) do
+    if vim.fn.filereadable(path) == 1 then
+      return path
+    end
+  end
+  return nil
+end
+local DIFF_HIGHLIGHT = find_diff_highlight()
+
+-- --no-pager: git invokes $PAGER/less by default when stdout looks like a
+-- tty, which overseer's task pane does, and it would otherwise hang
+-- waiting for input (the same class of bug already hit and fixed for
+-- perf elsewhere in this file). --no-index: works on any two files,
+-- skips the repo requirement.
+local function diff_cmd(old, new)
+  local base = "git --no-pager diff --no-index --color=always -- " .. old .. " " .. new
+  if DIFF_HIGHLIGHT then
+    return base .. " | " .. DIFF_HIGHLIGHT
+  end
+  return "git --no-pager diff --no-index --color=always --word-diff=plain --word-diff-regex='\\S+' -- " .. old .. " " .. new
+end
+
+-- Extracts a whole function body given its ctags-reported signature line
+-- (target): walks upward while the immediately preceding line is a
+-- template<...> header, a requires clause, or an attribute like
+-- [[nodiscard]] (stops at the first line that isn't one of those), then
+-- walks forward from the signature counting braces to find the matching
+-- close. Naive brace counting: a brace inside a string literal or comment
+-- would throw it off, same class of limitation as SED_NORMALIZE/MCA_STRIP
+-- above, not a full parser.
+-- Computes the "first end" line range instead of printing the body itself,
+-- so the caller can hand it to "bat --line-range" against the real file:
+-- bat then shows real gutter line numbers, which piping extracted text
+-- through bat via stdin can never do (bat has no way to know what line a
+-- piped snippet started at).
+local CTAGS_EXTRACT_RANGE_AWK = [==[{ lines[NR] = $0; last = NR } END { first = target; while (first > 1) { prev = lines[first - 1]; if (prev ~ /^[[:space:]]*template[[:space:]]*</ || prev ~ /^[[:space:]]*requires\y/ || prev ~ /^[[:space:]]*\[\[.*\]\][[:space:]]*$/) { first = first - 1 } else { break } } depth = 0; started = 0; for (i = first; i <= last; i++) { line = lines[i]; if (i >= target) { n = gsub(/{/, "{", line); m = gsub(/}/, "}", line); depth += n - m; if (depth > 0) started = 1; if (started && depth == 0) { print first" "i; exit } } } print first" "last }]==]
 
 -- For diffing/snapshots: strips address/byte-offset prefixes, collapses
 -- compiler-generated .L labels, drops .cfi_ directives and padding nops,
@@ -196,10 +357,13 @@ local MCA_CRITSEQ_ONLY = "awk '/^Critical sequence/{in_seq=1} "
   .. "{ if (!in_seq) { print; next } "
   .. "if ($0 ~ /\\+----/ || $0 ~ /Dependency Information/ || $0 ~ /^Critical sequence/ || $0 ~ /^$/) print }'"
 
--- Flag presets for "C++: compile". Each entry is { mode name, extra g++
--- flags, whether to emit -o <bin> }. asm-dump skips -o since -S writes
--- <file>.s next to the source. pgo-generate/pgo-use stay separate modes:
--- sequential two-step workflow, not interchangeable options.
+-- Flag presets for "C++: compile". Each entry is { mode name, extra
+-- compiler flags, whether to emit -o <bin>, compiler override (default
+-- g++) }. asm-dump skips -o since -S writes <file>.s next to the source.
+-- pgo-generate/pgo-use stay separate modes: sequential two-step workflow,
+-- not interchangeable options. opt-remarks needs clang++: its -Rpass
+-- diagnostics are source-line annotated and more informative than gcc's
+-- -fopt-info for missed-vectorize/missed-inline reasons.
 local COMPILE_MODES = {
   { "debug", { "-g", "-O0", "-Wall", "-Wextra", "-Wconversion", "-Wsign-conversion" }, true },
   { "release", { "-O3", "-march=native" }, true },
@@ -209,6 +373,18 @@ local COMPILE_MODES = {
   { "tsan", { "-g", "-O1", "-fsanitize=thread" }, true },
   { "asm-dump (.s)", { "-O3", "-march=native", "-S", "-fverbose-asm" }, false },
   { "vec-report", { "-O3", "-march=native", "-fopt-info-vec", "-fopt-info-vec-missed" }, true },
+  {
+    "opt-remarks (clang, vec+inline)",
+    {
+      "-O3",
+      "-march=native",
+      "-Rpass=loop-vectorize,inline",
+      "-Rpass-missed=loop-vectorize,inline",
+      "-Rpass-analysis=loop-vectorize",
+    },
+    true,
+    "clang++",
+  },
   { "pgo-generate", { "-O3", "-fprofile-generate" }, true },
   { "pgo-use", { "-O3", "-fprofile-use", "-fprofile-correction" }, true },
 }
@@ -231,7 +407,7 @@ local defs = {
   -----------------------------------------------------------------------------
   {
     name = "C++: compile",
-    desc = "Pick a build mode: debug / release(+lto) / fast-math / sanitizers / asm-dump / vec-report / pgo",
+    desc = "Pick a build mode: debug / release(+lto) / fast-math / sanitizers / asm-dump / vec-report / opt-remarks / pgo",
     tags = { "BUILD" },
     quickfix = true,
     params = {
@@ -244,7 +420,7 @@ local defs = {
     },
     build = function(c, p)
       local m = COMPILE_MODE_BY_NAME[p.mode] or COMPILE_MODE_BY_NAME["debug"]
-      local cmd = { "g++" }
+      local cmd = { m[4] or "g++" }
       vim.list_extend(cmd, m[2])
       cmd[#cmd + 1] = STD
       cmd[#cmd + 1] = c.file
@@ -263,9 +439,10 @@ local defs = {
     name = "C++: run",
     tags = { "RUN" },
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
-      local bin = resolve_bin(c, p)
-      return { cmd = { bin } }
+      local _, ebin = resolve_bin(c, p)
+      return { cmd = ebin .. resolve_args(p) }
     end,
   },
   {
@@ -275,6 +452,54 @@ local defs = {
     build = function(c)
       return {
         cmd = string.format("g++ -O3 -march=native %s %s -o %s && %s", STD, c.efile, c.ebin, c.ebin),
+      }
+    end,
+  },
+  {
+    -- For benchmark result/log files a run writes out: diff two of them
+    -- directly, no snapshot slot involved (you already have both files on
+    -- disk from separate runs).
+    -- Executes the first binary and saves its stdout; "C++: diff output
+    -- snapshot" below executes a second (possibly different) binary and
+    -- diffs against it. Same snapshot/diff pairing already used for asm,
+    -- bloaty, perf, just sourced from a run's actual output instead of a
+    -- static file.
+    name = "C++: create output snapshot",
+    desc = "Run the binary, save its stdout for diffing against a second run",
+    tags = { "RUN" },
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return {
+        cmd = string.format(
+          "mkdir -p %s && %s%s > %s/output.txt && echo output: %s/output.txt",
+          OUTPUT_SNAP_DIR,
+          ebin,
+          resolve_args(p),
+          OUTPUT_SNAP_DIR,
+          OUTPUT_SNAP_DIR
+        ),
+      }
+    end,
+  },
+  {
+    name = "C++: diff output snapshot",
+    desc = "Run a (possibly different) binary, diff its stdout against the last output snapshot",
+    tags = { "RUN" },
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      local snap_path = OUTPUT_SNAP_DIR .. "/output.txt"
+      return {
+        cmd = string.format(
+          "%s%s > /tmp/output-diff-cur.txt && %s",
+          ebin,
+          resolve_args(p),
+          diff_cmd(vim.fn.shellescape(snap_path), "/tmp/output-diff-cur.txt")
+        ),
+        info_lines = { "snapshot: " .. snap_path .. " created " .. human_age(vim.fn.getftime(snap_path)) },
       }
     end,
   },
@@ -289,11 +514,12 @@ local defs = {
     name = "perf: stat",
     desc = "-ddd: max detail (adds counters on top of perf's default metrics)",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       -- perf's report goes to stderr; > /dev/null only silences the
       -- target binary's own stdout.
-      return { cmd = string.format("perf stat -d -d -d %s > /dev/null", ebin) }
+      return { cmd = string.format("perf stat -d -d -d %s%s > /dev/null", ebin, resolve_args(p)) }
     end,
   },
   {
@@ -303,6 +529,7 @@ local defs = {
     name = "perf: stat microarch",
     desc = "split/misaligned loads, op-cache fallout, FP fill/spill faults, vector-op count. SIMD-relevant, 0 on scalar code",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local vendor = cpu_vendor()
@@ -346,7 +573,66 @@ local defs = {
         }
       end
       local events = table.concat(event_list, ",")
-      return { cmd = string.format("perf stat -e %s %s > /dev/null", events, ebin) }
+      return { cmd = string.format("perf stat -e %s %s%s > /dev/null", events, ebin, resolve_args(p)) }
+    end,
+  },
+  {
+    -- Raw cache-miss surface, not a 4C (compulsory/capacity/conflict/
+    -- coherence) classification: that needs a working-set-size sweep, not
+    -- one run. Coherence misses specifically are covered by "perf: c2c".
+    -- LLC-load-misses is unsupported on this AMD desktop part (no amd_l3
+    -- uncore PMU exposed, verified via perf stat directly): the AMD path
+    -- substitutes l2_request_g1 counters instead, since L3 isn't
+    -- observable here at all.
+    name = "perf: stat cache",
+    desc = "Cache-miss surface across the hierarchy (not a 4C classification, see desc on each vendor path)",
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      local vendor = cpu_vendor()
+      local event_list
+      if vendor == "amd" then
+        event_list = {
+          "cache-references",
+          "cache-misses",
+          "L1-dcache-load-misses",
+          "l2_request_g1.all",
+          "l2_request_g1.all_dc",
+          "dTLB-load-misses",
+        }
+      else
+        event_list = {
+          "cache-references",
+          "cache-misses",
+          "L1-dcache-load-misses",
+          "LLC-loads",
+          "LLC-load-misses",
+          "dTLB-load-misses",
+        }
+      end
+      local events = table.concat(event_list, ",")
+      return { cmd = string.format("perf stat -e %s %s%s > /dev/null", events, ebin, resolve_args(p)) }
+    end,
+  },
+  {
+    -- Native L1 topdown (retiring/bad-speculation/frontend-bound/
+    -- backend-bound), no toplev.py install needed. Verified working via
+    -- "perf stat -M" on this AMD Zen4 (perf's --topdown flag itself only
+    -- works with Intel's native TopdownL1+ groups and errors here).
+    name = "perf: stat topdown",
+    desc = "Level-1 topdown breakdown via perf's own -M metrics, works without toplev",
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return {
+        cmd = string.format(
+          "perf stat -M retiring,bad_speculation,frontend_bound,backend_bound %s%s > /dev/null",
+          ebin,
+          resolve_args(p)
+        ),
+      }
     end,
   },
   {
@@ -357,13 +643,15 @@ local defs = {
     -- 700+ entries on a real run, only the top ~20 carrying any signal.
     name = "perf: report",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
         cmd = string.format(
-          "perf record -o /tmp/perf.data -- %s > /dev/null "
+          "perf record -o /tmp/perf.data -- %s%s > /dev/null "
             .. "&& PAGER=cat perf report -i /tmp/perf.data --stdio --percent-limit 0.5",
-          ebin
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -380,6 +668,7 @@ local defs = {
     name = "perf: annotate",
     desc = "Give a symbol for one full function, or set min-percent to cap which functions get annotated",
     needs_bin = true,
+    takes_args = true,
     params = {
       symbol = { type = "string", name = "symbol", desc = "function symbol (blank = all functions above min-percent)", optional = true },
       min_percent = {
@@ -401,7 +690,12 @@ local defs = {
       end
       annotate = annotate .. " --stdio"
       return {
-        cmd = string.format("perf record -o /tmp/perf.data -- %s > /dev/null && PAGER=cat %s", ebin, annotate),
+        cmd = string.format(
+          "perf record -o /tmp/perf.data -- %s%s > /dev/null && PAGER=cat %s",
+          ebin,
+          resolve_args(p),
+          annotate
+        ),
       }
     end,
   },
@@ -413,17 +707,19 @@ local defs = {
     name = "perf: script",
     desc = "Raw dump, feeds flamegraph tooling. Full output written to file, only a head sample shown",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       -- PAGER=cat: perf script invokes $PAGER even with --stdio, and
       -- overseer's task pane looks like a real tty to it.
       return {
         cmd = string.format(
-          "perf record -o /tmp/perf.data -- %s > /dev/null "
+          "perf record -o /tmp/perf.data -- %s%s > /dev/null "
             .. "&& PAGER=cat perf script -i /tmp/perf.data > /tmp/perf-script.out "
             .. "&& echo \"output: /tmp/perf-script.out ($(wc -l < /tmp/perf-script.out) lines total, showing first 200)\" "
             .. "&& head -200 /tmp/perf-script.out",
-          ebin
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -435,13 +731,15 @@ local defs = {
       return vim.fn.executable "stackcollapse-perf.pl" == 1 and vim.fn.executable "flamegraph.pl" == 1
     end,
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
         cmd = string.format(
-          "perf record -o /tmp/perf.data -- %s > /dev/null && PAGER=cat perf script -i /tmp/perf.data "
+          "perf record -o /tmp/perf.data -- %s%s > /dev/null && PAGER=cat perf script -i /tmp/perf.data "
             .. "| stackcollapse-perf.pl | flamegraph.pl > /tmp/flame.svg && echo output: /tmp/flame.svg",
-          ebin
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -450,6 +748,7 @@ local defs = {
     name = "perf: c2c",
     desc = "False-sharing / cache-line contention, record then report --stdio",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       -- PAGER=cat: perf c2c report doesn't fully honor --stdio and still
@@ -459,9 +758,55 @@ local defs = {
       -- overseer's pane. Kept --stdio.
       return {
         cmd = string.format(
-          "PAGER=cat perf c2c record -- %s > /dev/null && PAGER=cat perf c2c report --stdio",
-          ebin
+          "PAGER=cat perf c2c record -- %s%s > /dev/null && PAGER=cat perf c2c report --stdio",
+          ebin,
+          resolve_args(p)
         ),
+      }
+    end,
+  },
+  {
+    name = "perf: create snapshot",
+    desc = "Capture the current binary's profile before an edit; diff after rebuild",
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return {
+        cmd = string.format(
+          "perf record -o /tmp/perf.data -- %s%s > /dev/null && mkdir -p %s "
+            .. "&& cp /tmp/perf.data %s/perf.data && echo output: %s/perf.data",
+          ebin,
+          resolve_args(p),
+          PERF_SNAP_DIR,
+          PERF_SNAP_DIR,
+          PERF_SNAP_DIR
+        ),
+      }
+    end,
+  },
+  {
+    -- perf diff has no native size-limit flag (checked --help): same
+    -- handling as "perf: script"'s inherently unbounded output, full diff
+    -- written to a file, only a head sample shown here.
+    name = "perf: diff snapshot",
+    desc = "Record fresh, diff against the last snapshot. Full diff written to file, only a head sample shown",
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      local snap_path = PERF_SNAP_DIR .. "/perf.data"
+      return {
+        cmd = string.format(
+          "perf record -o /tmp/perf.data -- %s%s > /dev/null "
+            .. "&& perf diff %s /tmp/perf.data > /tmp/perf-diff.out "
+            .. "&& echo \"output: /tmp/perf-diff.out ($(wc -l < /tmp/perf-diff.out) lines total, showing first 100)\" "
+            .. "&& head -100 /tmp/perf-diff.out",
+          ebin,
+          resolve_args(p),
+          vim.fn.shellescape(snap_path)
+        ),
+        info_lines = { "snapshot: " .. snap_path .. " created " .. human_age(vim.fn.getftime(snap_path)) },
       }
     end,
   },
@@ -616,10 +961,10 @@ local defs = {
       local snap_path = ASM_SNAP_DIR .. "/" .. sym .. ".txt"
       return {
         cmd = string.format(
-          "%s | %s > /tmp/asm-diff-cur.txt && diff -u %s /tmp/asm-diff-cur.txt",
+          "%s | %s > /tmp/asm-diff-cur.txt && %s",
           objdump_cmd(ebin, sym),
           SED_NORMALIZE,
-          vim.fn.shellescape(snap_path)
+          diff_cmd(vim.fn.shellescape(snap_path), "/tmp/asm-diff-cur.txt")
         ),
         info_lines = { "snapshot: " .. snap_path .. " created " .. human_age(vim.fn.getftime(snap_path)) },
       }
@@ -658,6 +1003,162 @@ local defs = {
       end
       parts[#parts + 1] = "echo '== loop back-edges (unroll factor hint) ==' && grep -Ec '^\\s*[0-9a-f]+:\\s*j' /tmp/asm-hazard-body.txt"
       return { cmd = table.concat(parts, " ; ") }
+    end,
+  },
+  {
+    -- True Compiler-Explorer style view: compiles the current TU straight to
+    -- annotated asm, no link, no execute, no needs_bin. Distinct from "asm:
+    -- disassemble"/"asm: dump" above, which read the already-linked binary
+    -- (post-LTO/inlining across TUs) instead of one source file.
+    name = "asm: compile view",
+    desc = "Compile this TU straight to annotated asm (-S -fverbose-asm), no link/execute needed",
+    build = function(c)
+      local out = "/tmp/" .. vim.fn.fnamemodify(c.file, ":t:r") .. ".s"
+      return {
+        cmd = string.format(
+          "g++ -S -O3 -march=native -fverbose-asm %s -o %s && cat %s",
+          c.efile,
+          vim.fn.shellescape(out),
+          vim.fn.shellescape(out)
+        ),
+      }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- codebase: batch structural/call-graph tools, project-wide (not tied to
+  -- the current buffer or a built binary)
+  -----------------------------------------------------------------------------
+  {
+    -- Whole-project HTML call/caller/include graph. GENERATE_HTML=YES
+    -- (rather than just emitting raw .dot files) since doxygen only keeps
+    -- the intermediate .dot graphs around long enough to render them into
+    -- an image during HTML/LaTeX generation; the browsable HTML site is
+    -- the actually-openable artifact. Verified working in a scratch test.
+    -- Doxygen's DOT_COMMON_ATTR only reaches the node/edge attribute lists
+    -- it emits (verified directly: splines is a graph-level graphviz
+    -- attribute, silently ignored when set there), so there's no Doxyfile
+    -- setting for edge routing. Worked around by keeping the intermediate
+    -- .dot files (DOT_CLEANUP=NO), injecting "splines=ortho;" as a graph
+    -- statement, and re-rendering each with dot ourselves, overwriting
+    -- doxygen's own straight-line SVG under the same filename its HTML
+    -- already links to. Orthogonal routing gives each edge a distinct
+    -- right-angle path instead of overlapping diagonals. DOT_GRAPH_MAX_NODES
+    -- lowered from doxygen's default (50) to 20: verified on a real 40+
+    -- edge fan-out function that this is what actually shrinks the tangle
+    -- (limiting call depth barely helped a wide-fanout graph in testing).
+    name = "codebase: call graph",
+    desc = "doxygen+dot call/caller/include graph (orthogonal routing, capped node count), HTML site to /tmp",
+    condition_callback = function()
+      return vim.fn.executable "doxygen" == 1 and vim.fn.executable "dot" == 1
+    end,
+    no_buffer = true,
+    build = function()
+      local out_dir = "/tmp/doxygen-callgraph"
+      local doxyfile = out_dir .. "/Doxyfile.overseer"
+      local html_dir = out_dir .. "/html"
+      local config = {
+        "INPUT = .",
+        "RECURSIVE = YES",
+        "OUTPUT_DIRECTORY = " .. out_dir,
+        "GENERATE_HTML = YES",
+        "GENERATE_LATEX = NO",
+        "HAVE_DOT = YES",
+        "CALL_GRAPH = YES",
+        "CALLER_GRAPH = YES",
+        "DOT_IMAGE_FORMAT = svg",
+        "EXTRACT_ALL = YES",
+        "QUIET = YES",
+        "DOT_CLEANUP = NO",
+        "DOT_GRAPH_MAX_NODES = 20",
+      }
+      local cmd = "mkdir -p "
+        .. out_dir
+        .. " && printf '%s\\n' "
+        .. table.concat(vim.tbl_map(vim.fn.shellescape, config), " ")
+        .. " > "
+        .. doxyfile
+        .. " && doxygen "
+        .. doxyfile
+        .. " && find "
+        .. html_dir
+        .. [[ -name '*.dot' -exec sed -i '0,/{/{s/{/{\n  splines=ortho;/}' {} \;]]
+        .. " && find "
+        .. html_dir
+        .. [[ -name '*.dot' -print0 | xargs -0 -I{} sh -c 'dot -Tsvg "{}" -o "${0%.dot}.svg"' {}]]
+        .. " && echo output: "
+        .. html_dir
+        .. "/index.html"
+      return { cmd = cmd }
+    end,
+  },
+  {
+    -- rg's own --stats footer natively answers "how many calls" (no
+    -- hand-rolled counting), -n gives "where" alongside it.
+    name = "codebase: call sites",
+    desc = "Grep call sites for a symbol project-wide, with a native match/file count summary",
+    condition_callback = function()
+      return vim.fn.executable "rg" == 1
+    end,
+    no_buffer = true,
+    params = {
+      symbol = { type = "string", name = "symbol", desc = "function/symbol name", optional = false },
+    },
+    prompts = { { key = "symbol", label = "Symbol: " } },
+    build = function(_, p)
+      -- --color=always rather than relying on rg's own tty auto-detection,
+      -- so match highlighting is guaranteed regardless of how the pty
+      -- overseer spawns this in gets detected.
+      return {
+        cmd = string.format("rg -n --stats --color=always %s", vim.fn.shellescape("\\b" .. p.symbol .. "\\s*\\(")),
+      }
+    end,
+  },
+  {
+    name = "codebase: find definition",
+    desc = "ctags lookup, prints the full function body including template/requires/attributes if present",
+    condition_callback = function()
+      return vim.fn.executable "ctags" == 1
+    end,
+    no_buffer = true,
+    params = {
+      symbol = { type = "string", name = "symbol", desc = "function/symbol name", optional = false },
+    },
+    prompts = { { key = "symbol", label = "Symbol: " } },
+    build = function(_, p)
+      local sym = vim.fn.shellescape(p.symbol)
+      local cmd = "res=$(ctags -x -R --c-kinds=f --c++-kinds=f --languages=C,C++ . 2>/dev/null | awk -v s="
+        .. sym
+        .. " '$1==s{print $3\" \"$4; exit}'); "
+        .. "if [ -z \"$res\" ]; then echo not found: "
+        .. sym
+        .. "; exit 1; fi; "
+        .. "line=${res%% *}; file=${res#* }; "
+        .. "range=$(awk -v target=\"$line\" '"
+        .. CTAGS_EXTRACT_RANGE_AWK
+        .. "' \"$file\"); "
+        .. "start=${range%% *}; end=${range#* }; "
+      -- bat reads the real file by --line-range instead of extracted text
+      -- piped via stdin, so the gutter shows the code's actual line
+      -- numbers, not 1-based numbering of just the snippet. bat is an
+      -- enhancement, not a hard requirement: falls back to sed+nl (still
+      -- shows real line numbers, just no syntax color) rather than hiding
+      -- this whole task when bat isn't installed. --paging=never for the
+      -- same reason --no-pager is forced elsewhere: overseer's task pane
+      -- looks like a real tty and would otherwise hang waiting for a
+      -- pager keypress. --theme is generated fresh from the live
+      -- colorscheme (see sync_bat_theme above).
+      if vim.fn.executable "bat" == 1 then
+        local theme = sync_bat_theme()
+        cmd = cmd .. 'bat --style=numbers --line-range="$start:$end" --language=cpp --color=always --paging=never'
+        if theme then
+          cmd = cmd .. " --theme=" .. theme
+        end
+        cmd = cmd .. ' "$file"'
+      else
+        cmd = cmd .. 'sed -n "${start},${end}p" "$file" | nl -ba -v"$start"'
+      end
+      return { cmd = cmd }
     end,
   },
 
@@ -786,12 +1287,14 @@ local defs = {
     name = "valgrind: memcheck",
     desc = "--leak-check=full --show-leak-kinds=all --track-origins=yes",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
         cmd = string.format(
-          "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes %s > /dev/null",
-          ebin
+          "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes %s%s > /dev/null",
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -803,15 +1306,17 @@ local defs = {
     -- simulated cache model can't improve on.
     name = "valgrind: callgrind",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       -- Keeps output out of the project directory, same as every other
       -- tool here.
       return {
         cmd = string.format(
-          "valgrind --tool=callgrind --callgrind-out-file=/tmp/callgrind.out.%%p %s > /dev/null "
+          "valgrind --tool=callgrind --callgrind-out-file=/tmp/callgrind.out.%%p %s%s > /dev/null "
             .. "&& echo output: $(ls -t /tmp/callgrind.out.* | head -1)",
-          ebin
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -829,13 +1334,15 @@ local defs = {
   {
     name = "valgrind: massif",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
         cmd = string.format(
-          "valgrind --tool=massif --massif-out-file=/tmp/massif.out.%%p %s > /dev/null "
+          "valgrind --tool=massif --massif-out-file=/tmp/massif.out.%%p %s%s > /dev/null "
             .. "&& echo output: $(ls -t /tmp/massif.out.* | head -1)",
-          ebin
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -850,9 +1357,10 @@ local defs = {
     name = "valgrind: helgrind",
     desc = "Thread race detection, alternative to tsan",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
-      return { cmd = string.format("valgrind --tool=helgrind %s > /dev/null", ebin) }
+      return { cmd = string.format("valgrind --tool=helgrind %s%s > /dev/null", ebin, resolve_args(p)) }
     end,
   },
 
@@ -866,10 +1374,41 @@ local defs = {
       return vim.fn.executable "toplev.py" == 1 or vim.fn.executable "toplev" == 1
     end,
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local tool = pick { "toplev.py", "toplev" }
-      return { cmd = string.format("%s -l3 --no-desc --single-thread -- %s", tool, ebin) }
+      return { cmd = string.format("%s -l3 --no-desc --single-thread -- %s%s", tool, ebin, resolve_args(p)) }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- likwid: HPC-standard grouped hardware counters. MEM_DP is the roofline/
+  -- ECM ingredient group (bandwidth + FLOPs); the ECM model itself (T_ECM =
+  -- max(T_OL, T_nOL + T_data)) is an analytical hand-model applied against
+  -- the loop kernel, not something one command outputs.
+  -----------------------------------------------------------------------------
+  {
+    name = "likwid: perfctr",
+    desc = "Grouped HPC counters (bandwidth/FLOPs/cache), feeds a roofline or ECM model by hand",
+    condition_callback = function()
+      return vim.fn.executable "likwid-perfctr" == 1
+    end,
+    needs_bin = true,
+    takes_args = true,
+    params = {
+      group = {
+        type = "enum",
+        name = "group",
+        choices = { "MEM_DP", "L2CACHE", "L3CACHE" },
+        default = "MEM_DP",
+      },
+    },
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return {
+        cmd = string.format("likwid-perfctr -C 0 -g %s -- %s%s", vim.fn.shellescape(p.group), ebin, resolve_args(p)),
+      }
     end,
   },
 
@@ -886,12 +1425,14 @@ local defs = {
       return vim.fn.executable "sde64" == 1
     end,
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
         cmd = string.format(
-          "sde64 -mix -omix /tmp/sde-mix.out -- %s > /dev/null && echo output: /tmp/sde-mix.out && cat /tmp/sde-mix.out",
-          ebin
+          "sde64 -mix -omix /tmp/sde-mix.out -- %s%s > /dev/null && echo output: /tmp/sde-mix.out && cat /tmp/sde-mix.out",
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -903,13 +1444,15 @@ local defs = {
       return vim.fn.executable "sde64" == 1
     end,
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       -- -ast writes its report to a file, not stdout.
       return {
         cmd = string.format(
-          "sde64 -ast -oast /tmp/sde-ast.out -- %s > /dev/null && echo output: /tmp/sde-ast.out && cat /tmp/sde-ast.out",
-          ebin
+          "sde64 -ast -oast /tmp/sde-ast.out -- %s%s > /dev/null && echo output: /tmp/sde-ast.out && cat /tmp/sde-ast.out",
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -921,14 +1464,16 @@ local defs = {
       return vim.fn.executable "sde64" == 1
     end,
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       -- -odyn_mask_profile also writes to a file, same as -ast/-oast.
       return {
         cmd = string.format(
-          "sde64 -dyn_mask_profile -odyn_mask_profile /tmp/sde-dyn-mask-profile.txt -- %s > /dev/null "
+          "sde64 -dyn_mask_profile -odyn_mask_profile /tmp/sde-dyn-mask-profile.txt -- %s%s > /dev/null "
             .. "&& echo output: /tmp/sde-dyn-mask-profile.txt && cat /tmp/sde-dyn-mask-profile.txt",
-          ebin
+          ebin,
+          resolve_args(p)
         ),
       }
     end,
@@ -940,13 +1485,14 @@ local defs = {
       return vim.fn.executable "sde64" == 1
     end,
     needs_bin = true,
+    takes_args = true,
     params = {
       arch = { type = "string", name = "arch", desc = "sde64 target flag suffix, e.g. skx/spr/gnr", default = "spr" },
     },
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local arch = (p.arch and p.arch ~= "") and p.arch or "spr"
-      return { cmd = string.format("sde64 -%s -- %s", arch, ebin) }
+      return { cmd = string.format("sde64 -%s -- %s%s", arch, ebin, resolve_args(p)) }
     end,
   },
 
@@ -1025,6 +1571,25 @@ local defs = {
       return { cmd = { "clang-tidy", "--checks=" .. CLANG_TIDY_CHECKS, c.file, "--fix", "--", STD } }
     end,
   },
+  {
+    -- Different static-analysis heuristics than clang-tidy above (array
+    -- bounds, uninitialized use, portability), worth running both.
+    name = "cppcheck: check",
+    condition_callback = function()
+      return vim.fn.executable "cppcheck" == 1
+    end,
+    build = function(c)
+      return {
+        cmd = {
+          "cppcheck",
+          "--enable=warning,performance,portability,style",
+          "--std=c++20",
+          "--language=c++",
+          c.file,
+        },
+      }
+    end,
+  },
 
   -----------------------------------------------------------------------------
   -- rr
@@ -1032,9 +1597,10 @@ local defs = {
   {
     name = "rr: record",
     needs_bin = true,
+    takes_args = true,
     build = function(c, p)
-      local bin = resolve_bin(c, p)
-      return { cmd = { "rr", "record", bin } }
+      local _, ebin = resolve_bin(c, p)
+      return { cmd = string.format("rr record %s%s", ebin, resolve_args(p)) }
     end,
   },
   {
@@ -1073,19 +1639,23 @@ function M.setup()
   })
 
   for _, def in ipairs(defs) do
-    local condition = { filetype = { "cpp", "c" } }
+    -- needs_bin defs take an explicit binary path, and no_buffer defs
+    -- (codebase-wide tools: call graph, call sites, ...) operate on the
+    -- project tree, not the buffer, so neither needs a C/C++ file open.
+    -- Only compile/build tasks (which read the buffer as source) require
+    -- filetype cpp/c.
+    local skip_buffer = def.needs_bin or def.no_buffer
+    local condition = skip_buffer and {} or { filetype = { "cpp", "c" } }
     if def.condition_callback then
       condition.callback = def.condition_callback
     end
 
-    -- needs_bin defs get a fresh "binary" param each build (never cached)
-    -- so the desc hint reflects this buffer's guessed path, and the param
-    -- stays required so overseer always prompts for it.
+    -- needs_bin defs get a "binary" param, always required so overseer
+    -- always prompts for it; no guess tied to the current buffer since one
+    -- may not be open.
     local params = def.params or {}
     if def.needs_bin then
       params = function()
-        local c = ctx()
-        local guess = vim.fn.fnamemodify(c.bin, ":~")
         local schema = {}
         for k, v in pairs(def.params or {}) do
           schema[k] = v
@@ -1093,9 +1663,17 @@ function M.setup()
         schema.bin = {
           type = "string",
           name = "binary",
-          desc = "path to executable to run (blank = " .. guess .. ")",
+          desc = "path to executable to run",
           optional = false,
         }
+        if def.takes_args then
+          schema.args = {
+            type = "string",
+            name = "args",
+            desc = "arguments passed to the binary (blank = none)",
+            optional = true,
+          }
+        end
         return schema
       end
     end
@@ -1107,10 +1685,14 @@ function M.setup()
       params = params,
       condition = condition,
       builder = function(params)
-        local c = ctx()
+        -- needs_bin/no_buffer defs never read the current buffer: ctx()
+        -- would return blank paths with no file open, so cwd falls back to
+        -- Neovim's own cwd instead (matches invoking the binary, or scanning
+        -- the project tree, from the project root).
+        local c = skip_buffer and {} or ctx()
         local task = def.build(c, params)
         task.name = task.name or def.name
-        task.cwd = task.cwd or c.dir
+        task.cwd = task.cwd or (skip_buffer and vim.fn.getcwd() or c.dir)
         if def.quickfix then
           task.components = task.components
             or { { "on_output_quickfix", open_on_error = true }, "default" }
@@ -1123,7 +1705,7 @@ function M.setup()
         local shell_cmd = to_shell_str(task.cmd)
         local info = { "+ " .. shorten_display(shell_cmd) }
         if def.needs_bin then
-          local bin_path = (params and params.bin and params.bin ~= "") and vim.fn.expand(params.bin) or c.bin
+          local bin_path = vim.fn.expand(params.bin)
           info[#info + 1] = "bin: " .. shorten_display(bin_path) .. " built " .. human_age(vim.fn.getftime(bin_path))
         end
         if task.info_lines then
@@ -1147,8 +1729,24 @@ function M.setup()
     -- "command not found" when picked.
     if not def.condition_callback or def.condition_callback() then
       M._names[#M._names + 1] = def.name
+
+      -- needs_bin/takes_args auto-generate their prompts (binary path with
+      -- file completion, then optional args); any def can also declare its
+      -- own def.prompts (e.g. codebase: * asking for a symbol) which are
+      -- appended after. Same chain, same vim.ui.input mechanism either way.
+      local prompts = {}
       if def.needs_bin then
-        M._needs_bin[def.name] = true
+        prompts[#prompts + 1] =
+          { key = "bin", label = "Binary to run: ", completion = "file", default = vim.fn.getcwd() .. "/" }
+        if def.takes_args then
+          prompts[#prompts + 1] = { key = "args", label = "Arguments (blank = none): ", required = false }
+        end
+      end
+      if def.prompts then
+        vim.list_extend(prompts, def.prompts)
+      end
+      if #prompts > 0 then
+        M._prompts[def.name] = prompts
       end
     end
   end
@@ -1181,13 +1779,33 @@ function M.telescope_run()
   -- it, not telescope's prompt buffer.
   local src_buf = vim.api.nvim_get_current_buf()
 
+  -- Every def with M._prompts[name] set walks the same chained
+  -- vim.ui.input flow, one field at a time (binary+args, a symbol, two
+  -- file paths, ...): the mechanism is identical, only the fields differ.
+  -- A blank required field cancels the whole task, same as before for a
+  -- blank binary path.
+  local function chain_prompts(overseer, name, prompts, idx, collected)
+    local spec = prompts[idx]
+    if not spec then
+      overseer.run_task { name = name, params = collected }
+      return
+    end
+    vim.ui.input({ prompt = spec.label, default = spec.default, completion = spec.completion }, function(value)
+      if (not value or value == "") and spec.required ~= false then
+        return
+      end
+      collected[spec.key] = value or ""
+      chain_prompts(overseer, name, prompts, idx + 1, collected)
+    end)
+  end
+
   -- Size the picker to the longest template name plus padding, capped at
-  -- 70% of the terminal width.
+  -- 75% of the terminal width.
   local longest = 0
   for _, n in ipairs(M._names) do
     longest = math.max(longest, #n)
   end
-  local width = math.min(longest + 10, math.floor(vim.o.columns * 0.7))
+  local width = math.min(longest + 30, math.floor(vim.o.columns * 0.75))
 
   pickers
     .new(themes.get_dropdown { layout_config = { width = width, height = 0.6 } }, {
@@ -1205,20 +1823,9 @@ function M.telescope_run()
             vim.api.nvim_set_current_buf(src_buf)
           end
           local name = entry[1]
-          if M._needs_bin[name] then
-            -- Bypasses overseer's own text-only param form: vim.ui.input
-            -- gives real file-path completion, rooted at the cwd Neovim
-            -- started in.
-            vim.ui.input({
-              prompt = "Binary to run: ",
-              default = vim.fn.getcwd() .. "/",
-              completion = "file",
-            }, function(path)
-              if not path or path == "" then
-                return
-              end
-              overseer.run_task { name = name, params = { bin = path } }
-            end)
+          local prompts = M._prompts[name]
+          if prompts then
+            chain_prompts(overseer, name, prompts, 1, {})
           else
             overseer.run_task { name = name }
           end

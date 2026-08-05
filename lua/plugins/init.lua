@@ -57,7 +57,9 @@ return {
   {
     "stevearc/overseer.nvim",
     cmd = {
-      "OverseerRun", "OverseerToggle", "OverseerQuickAction", "OverseerTaskAction",
+      -- OverseerQuickAction isn't a real command in this overseer version
+      -- (only OverseerTaskAction is) -- dropped it, it was dead weight.
+      "OverseerRun", "OverseerToggle", "OverseerTaskAction",
       "OverseerInfo", "OverseerBuild", "OverseerRunCmd", "OverseerClearCache",
     },
     config = function()

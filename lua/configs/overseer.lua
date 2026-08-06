@@ -1,26 +1,18 @@
 -- Overseer task templates for C/C++ (HPC) workflows.
 --
--- Two kinds of defs:
---   compile/build tasks operate on the current buffer (ctx.file/.bin/.dir,
---   classic vim %, %:r, %:h expansions), require filetype cpp/c, and cwd to
---   the buffer's directory.
---   needs_bin = true tasks (perf, valgrind, mca, asm, ...) take an explicit
---   "binary" param instead, work without any C/C++ buffer open, and cwd to
---   Neovim's own cwd (project root).
+-- Two kinds of defs: buffer-based (compile/build) use ctx.file/.bin/.dir,
+-- require filetype cpp/c, cwd to the buffer's dir. needs_bin = true tasks
+-- (perf, valgrind, mca, asm, ...) take an explicit "binary" param instead,
+-- work without a C/C++ buffer, cwd to Neovim's own cwd.
 --
--- This module does not `require("overseer")` at the top level: it is
--- required by mappings.lua to reach M.telescope_run(), and pulling in
--- overseer here would trigger lazy-load before M is returned, recursing
--- through the plugin's `config`. overseer is required lazily inside
--- M.setup() (run from the plugin `config`) and M.telescope_run().
+-- No top-level require("overseer"): mappings.lua requires this module to
+-- reach M.telescope_run(), and requiring overseer here would trigger
+-- lazy-load before M is returned. Required lazily inside M.setup()/M.telescope_run().
 
 local M = {}
 M._names = {} -- template names, populated by M.setup(), consumed by the picker
--- name -> ordered list of { key, label, completion?, default? } prompts.
--- Every def that needs input from the user goes through the same chained
--- vim.ui.input flow in the custom telescope picker below: only the fields
--- asked differ (binary+args, a symbol, two file paths, ...), never the
--- mechanism.
+-- name -> ordered list of { key, label, completion?, default? } prompts,
+-- consumed by the chained vim.ui.input flow in the telescope picker below.
 M._prompts = {}
 
 local STD = "-std=c++20"
@@ -53,9 +45,8 @@ local function has_bcc(base)
   return vim.fn.executable(base .. "-bpfcc") == 1 or vim.fn.executable(base) == 1
 end
 
--- PMU raw event names are vendor specific (Intel and AMD use different
--- names for analogous counters). "perf: stat microarch" uses this to pick
--- its event list.
+-- PMU raw event names are vendor-specific; picks the event list for
+-- "perf: stat microarch".
 local function cpu_vendor()
   local ok, lines = pcall(vim.fn.readfile, "/proc/cpuinfo", "", 30)
   if ok then
@@ -70,12 +61,9 @@ local function cpu_vendor()
   return "unknown"
 end
 
--- bat ships its own fixed palettes; none of them is this config's actual
--- colorscheme. Generates a bat .tmTheme from the *live* highlight groups
--- instead, so "codebase: find definition" (the only task piping through
--- bat) renders in the same colors as a normal code buffer, not an
--- approximation. Re-synced on every invocation of that task (cheap, and
--- picks up a mid-session :colorscheme change) rather than cached.
+-- bat's bundled palettes don't match this colorscheme, so generate a
+-- .tmTheme from the live highlight groups instead. Re-synced on every call
+-- (cheap, picks up mid-session :colorscheme changes) rather than cached.
 local BAT_THEME_NAME = "NvimSync"
 local BAT_THEME_SCOPES = {
   { "comment", { "@comment", "Comment" } },
@@ -165,18 +153,15 @@ local function sync_bat_theme()
   return BAT_THEME_NAME
 end
 
--- Tools that operate on an already-built binary can't assume the current
--- buffer's "<file>:r" is the right executable: justfile/CMake/etc. projects
--- build elsewhere under a different name. defs with needs_bin = true get a
--- required "binary" param instead, independent of any open buffer.
+-- Build systems (justfile/CMake/etc.) may not name the binary "<file>:r",
+-- so needs_bin defs take an explicit required "binary" param instead.
 local function resolve_bin(_, p)
   local bin = vim.fn.expand(p.bin)
   return bin, vim.fn.shellescape(bin)
 end
 
--- defs with takes_args = true get an optional "args" param, appended
--- verbatim (unescaped: the user's own text is the shell's argv, quoting is
--- theirs to control) right after the binary. Blank means no arguments.
+-- takes_args = true defs get an optional "args" param, appended unescaped
+-- (quoting is the user's to control) right after the binary.
 local function resolve_args(p)
   if p and p.args and p.args ~= "" then
     return " " .. p.args
@@ -184,9 +169,8 @@ local function resolve_args(p)
   return ""
 end
 
--- "<date> (<age> ago)" for a file's mtime, or "not found". Shows how old a
--- binary or snapshot is before a task reads it, so a stale artifact is
--- obvious.
+-- "<date> (<age> ago)" for a file's mtime, or "not found" — surfaces stale
+-- binaries/snapshots before a task reads them.
 local function human_age(mtime)
   if not mtime or mtime <= 0 then
     return "not found"
@@ -233,11 +217,8 @@ local function shorten_display(str)
   return out
 end
 
--- asm/mca/uica/pahole/bloaty all read an artifact the build already
--- produced (the linked binary) via the same needs_bin/resolve_bin
--- mechanism as perf/valgrind/rr, instead of reproducing a build to get an
--- intermediate .o with the right flags. All output is plain text, no TUI
--- or pager.
+-- asm/mca/uica/pahole/bloaty read the already-linked binary via the same
+-- needs_bin/resolve_bin mechanism as perf/valgrind/rr. Plain text, no TUI/pager.
 local ASM_SNAP_DIR = "/tmp/asm-snap"
 local BLOATY_SNAP_DIR = "/tmp/bloaty-snap"
 local PERF_SNAP_DIR = "/tmp/perf-snap"
@@ -263,13 +244,9 @@ local function objdump_cmd(ebin, sym)
   return cmd .. " " .. ebin
 end
 
--- git's own diff-highlight (ships with git, not always on PATH) turns a
--- normal line-per-line diff into full "-old line" / "+new line" pairs with
--- the actually-changed substring additionally reverse-video highlighted
--- within each: line-per-line context plus a pointer to what changed,
--- rather than git's --word-diff merging old/new into one line. Falls back
--- to --word-diff=plain (bracketed [-old-]/{+new+} markers, still readable
--- without color) if diff-highlight isn't found anywhere on this machine.
+-- diff-highlight (ships with git, not always on PATH) highlights just the
+-- changed substring within each -old/+new line pair. Falls back to
+-- --word-diff=plain if not found anywhere on this machine.
 local function find_diff_highlight()
   if vim.fn.executable "diff-highlight" == 1 then
     return "diff-highlight"
@@ -288,11 +265,8 @@ local function find_diff_highlight()
 end
 local DIFF_HIGHLIGHT = find_diff_highlight()
 
--- --no-pager: git invokes $PAGER/less by default when stdout looks like a
--- tty, which overseer's task pane does, and it would otherwise hang
--- waiting for input (the same class of bug already hit and fixed for
--- perf elsewhere in this file). --no-index: works on any two files,
--- skips the repo requirement.
+-- --no-pager: overseer's task pane looks like a tty to git, which would
+-- otherwise invoke $PAGER and hang. --no-index: diff any two files, no repo needed.
 local function diff_cmd(old, new)
   local base = "git --no-pager diff --no-index --color=always -- " .. old .. " " .. new
   if DIFF_HIGHLIGHT then
@@ -301,40 +275,20 @@ local function diff_cmd(old, new)
   return "git --no-pager diff --no-index --color=always --word-diff=plain --word-diff-regex='\\S+' -- " .. old .. " " .. new
 end
 
--- Extracts a whole function body given its ctags-reported signature line
--- (target): walks upward while the immediately preceding line is a
--- template<...> header, a requires clause, or an attribute like
--- [[nodiscard]] (stops at the first line that isn't one of those), then
--- walks forward from the signature counting braces to find the matching
--- close. Naive brace counting: a brace inside a string literal or comment
--- would throw it off, same class of limitation as SED_NORMALIZE/MCA_STRIP
--- above, not a full parser.
--- Computes the "first end" line range instead of printing the body itself,
--- so the caller can hand it to "bat --line-range" against the real file:
--- bat then shows real gutter line numbers, which piping extracted text
--- through bat via stdin can never do (bat has no way to know what line a
--- piped snippet started at).
+-- Given a ctags signature line: walks up past template<>/requires/attribute
+-- lines, then counts braces forward to the matching close. Naive brace
+-- counting (breaks on braces in strings/comments), not a full parser.
+-- Returns a "first end" line range (not the body text) so the caller can
+-- bat --line-range the real file, keeping bat's gutter numbers accurate.
 local CTAGS_EXTRACT_RANGE_AWK = [==[{ lines[NR] = $0; last = NR } END { first = target; while (first > 1) { prev = lines[first - 1]; if (prev ~ /^[[:space:]]*template[[:space:]]*</ || prev ~ /^[[:space:]]*requires\y/ || prev ~ /^[[:space:]]*\[\[.*\]\][[:space:]]*$/) { first = first - 1 } else { break } } depth = 0; started = 0; for (i = first; i <= last; i++) { line = lines[i]; if (i >= target) { n = gsub(/{/, "{", line); m = gsub(/}/, "}", line); depth += n - m; if (depth > 0) started = 1; if (started && depth == 0) { print first" "i; exit } } } print first" "last }]==]
 
--- bcc's funclatency/funccount read the ELF symbol table directly (no
--- demangling): a C++ function's real symbol is mangled
--- (_Z17SIMD_fnv1a_Search...), so typing the readable name straight into
--- bcc fails with "Could not find X in binary". Resolves a readable/
--- demangled search term to its actual raw symbol instead: matches a text
--- symbol (T/t/W/w -- global, local/static, or weak; "t" specifically
--- covers `static` functions, which a T-only filter would silently miss)
--- whose demangled name (nm -C) contains the term as a COMPLETE identifier
--- (word-boundary match, same as "codebase: call sites"'s rg pattern) --
--- not a plain substring match: "fnv1a" as a bare substring would also
--- match inside "SIMD_fnv1a_Search" and silently resolve to the wrong
--- function, which is exactly what happened before this was word-boundary
--- anchored. On no exact match, lists substring-only candidates as a hint
--- (e.g. "did you mean SIMD_fnv1a_Search") without silently using one --
--- small `static` functions are also routinely inlined away entirely at
--- -O3 and have no symbol at all, which a hint can't fix but should at
--- least explain. Plain C-linkage names like "main" already match as-is,
--- nothing to translate. Expects $bin and $func set by the caller; sets
--- $mangled or exits with an explanation.
+-- bcc reads the ELF symbol table directly (no demangling), so a readable
+-- C++ name like SIMD_fnv1a_Search must resolve to its mangled symbol first.
+-- Matches T/t/W/w symbols (t covers static) via nm -C, word-boundary only
+-- (a substring match once silently resolved "fnv1a" to the wrong function
+-- inside SIMD_fnv1a_Search). No exact match: lists substring hints instead
+-- of guessing (small statics are often inlined away with no symbol at all).
+-- Expects $bin/$func set by caller; sets $mangled or exits with an explanation.
 local RESOLVE_SYMBOL_SH = [==[addr=$(nm -C "$bin" 2>/dev/null | awk -v f="$func" '$2 ~ /^[TtWw]$/ { name=$0; sub(/^[0-9a-f]+ +[A-Za-z] +/, "", name); if (name ~ ("\\<" f "\\>")) { print $1; exit } }'); if [ -z "$addr" ]; then echo "no function named exactly '$func' found in $bin (it may have been inlined away at this optimization level, especially if it's a small 'static' function)"; hint=$(nm -C "$bin" 2>/dev/null | awk -v f="$func" '$2 ~ /^[TtWw]$/ { name=$0; sub(/^[0-9a-f]+ +[A-Za-z] +/, "", name); if (index(name, f) > 0) print name }' | head -3); if [ -n "$hint" ]; then echo "closest matches (not used automatically):"; echo "$hint"; else echo "try: nm -C $bin | grep -i '$func'"; fi; exit 1; fi; mangled=$(nm "$bin" 2>/dev/null | awk -v a="$addr" '$1==a { print $3; exit }'); if [ -z "$mangled" ]; then echo "resolved address $addr for '$func' but found no matching raw symbol (unexpected)"; exit 1; fi]==]
 
 -- For diffing/snapshots: strips address/byte-offset prefixes, collapses
@@ -343,11 +297,10 @@ local RESOLVE_SYMBOL_SH = [==[addr=$(nm -C "$bin" 2>/dev/null | awk -v f="$func"
 local SED_NORMALIZE =
   "sed -E 's/^[[:space:]]*[0-9a-f]+:[[:space:]]*//; s/\\.L[A-Za-z]+[0-9_]+/.L/g; /\\.cfi_/d; /^[[:space:]]*nop/d; s/0x[0-9a-f]{6,}/0xADDR/g'"
 
--- For llvm-mca/uiCA: must stay valid assembly, so it can't blur addresses
--- like SED_NORMALIZE does. Drops objdump's headers, function-label lines,
--- and branch/call/ret/loop instructions (their targets reference symbols
--- undefined in this snippet). Lossy on branchy code, but mca models
--- straight-line port/latency pressure, not control flow.
+-- Must stay valid assembly for llvm-mca/uiCA, so unlike SED_NORMALIZE it
+-- can't blur addresses. Drops branch/call/ret/loop (targets undefined in
+-- this snippet) — lossy on branchy code, but mca only models straight-line
+-- port/latency pressure anyway.
 local MCA_STRIP = "sed -E "
   .. "-e '/^[[:space:]]*$/d' "
   .. "-e '/: *file format/d' "
@@ -358,33 +311,25 @@ local MCA_STRIP = "sed -E "
   .. "-e '/^[[:space:]]*nop/d' "
   .. "-e '/^[[:space:]]*(j[a-z]*|call|ret[a-z]*|loop[a-z]*)([[:space:]]|$)/d'"
 
--- llvm-mca's "Critical sequence" view sits between the summary/bottleneck
--- section and the -all-stats aggregate tables (Dispatch/Scheduler/Retire/
--- Register File stats), so mca is split into two tasks instead of one
--- mixed dump. MCA_DROP_CRITSEQ removes the whole critical-sequence table
--- (used by "mca: throughput", which keeps the aggregate stats). Detects
--- the table by indentation: every row in it is either blank, indented, or
--- a "+----" connector; the next real section header starts at column 0.
+-- llvm-mca's critical-sequence table sits between the summary and the
+-- -all-stats tables, so mca is split into two tasks. Drops the table for
+-- "mca: throughput" by indentation: rows are blank/indented/"+----", the
+-- next section header starts at column 0.
 local MCA_DROP_CRITSEQ = "awk '"
   .. "/^Critical sequence/ { skip = 1; next } "
   .. "skip && ($0 ~ /^[[:space:]]/ || $0 ~ /^$/ || $0 ~ /\\+----/) { next } "
   .. "{ skip = 0; print }'"
 
--- Most critical-sequence rows carry no annotation at all: only the ones
--- marked with a "+----" connector explain a stall (register or resource
--- dependency). Used by "mca: critical path", which drops -all-stats so
--- nothing follows the critical-sequence table (safe to filter to end).
+-- Only "+----"-marked rows explain a stall; used by "mca: critical path",
+-- which drops -all-stats so nothing follows the table (safe to filter to end).
 local MCA_CRITSEQ_ONLY = "awk '/^Critical sequence/{in_seq=1} "
   .. "{ if (!in_seq) { print; next } "
   .. "if ($0 ~ /\\+----/ || $0 ~ /Dependency Information/ || $0 ~ /^Critical sequence/ || $0 ~ /^$/) print }'"
 
--- Flag presets for "C++: compile". Each entry is { mode name, extra
--- compiler flags, whether to emit -o <bin>, compiler override (default
--- g++) }. asm-dump skips -o since -S writes <file>.s next to the source.
--- pgo-generate/pgo-use stay separate modes: sequential two-step workflow,
--- not interchangeable options. opt-remarks needs clang++: its -Rpass
--- diagnostics are source-line annotated and more informative than gcc's
--- -fopt-info for missed-vectorize/missed-inline reasons.
+-- Flag presets for "C++: compile": { mode name, flags, emit -o?, compiler }.
+-- asm-dump skips -o (-S writes <file>.s next to source). pgo-generate/-use
+-- are a sequential two-step workflow, not interchangeable. opt-remarks needs
+-- clang++: its -Rpass diagnostics beat gcc's -fopt-info for vectorize/inline.
 local COMPILE_MODES = {
   { "debug", { "-g", "-O0", "-Wall", "-Wextra", "-Wconversion", "-Wsign-conversion" }, true },
   { "release", { "-O3", "-march=native" }, true },
@@ -419,9 +364,8 @@ end
 -- Each def: { name, desc?, tags?, quickfix?, needs_bin?, condition_callback?,
 --             params?, build = fn(ctx, params) -> task }
 -- build() returns a task-opts table; cmd may be a list (exec directly) or a
--- string (run through the shell, so pipes/globs/&& work). It may also set
--- info_lines (array of strings), extra facts the shared builder echoes
--- before running (e.g. a snapshot's age, alongside the binary's).
+-- shell string (pipes/globs/&& work). info_lines (array of strings) adds
+-- extra facts the shared builder echoes before running.
 local defs = {
   -----------------------------------------------------------------------------
   -- Compile (single template, "mode" param picks the flag preset)
@@ -477,14 +421,9 @@ local defs = {
     end,
   },
   {
-    -- For benchmark result/log files a run writes out: diff two of them
-    -- directly, no snapshot slot involved (you already have both files on
-    -- disk from separate runs).
-    -- Executes the first binary and saves its stdout; "C++: diff output
-    -- snapshot" below executes a second (possibly different) binary and
-    -- diffs against it. Same snapshot/diff pairing already used for asm,
-    -- bloaty, perf, just sourced from a run's actual output instead of a
-    -- static file.
+    -- Saves this run's stdout; "C++: diff output snapshot" below runs a
+    -- (possibly different) binary and diffs against it. Same snapshot/diff
+    -- pairing as asm/bloaty/perf, sourced from stdout instead of a static file.
     name = "C++: create output snapshot",
     desc = "Run the binary, save its stdout for diffing against a second run",
     tags = { "RUN" },
@@ -529,9 +468,8 @@ local defs = {
   -- perf
   -----------------------------------------------------------------------------
   {
-    -- -ddd adds counters on top of perf's default metric group; an
-    -- explicit -e list replaces that group instead, which is why the old
-    -- "stat detailed" showed less info than plain "stat".
+    -- -ddd adds counters onto perf's default group; an explicit -e list would
+    -- replace it instead (why the old "stat detailed" showed less than "stat").
     name = "perf: stat",
     desc = "-ddd: max detail (adds counters on top of perf's default metrics)",
     needs_bin = true,
@@ -598,13 +536,9 @@ local defs = {
     end,
   },
   {
-    -- Raw cache-miss surface, not a 4C (compulsory/capacity/conflict/
-    -- coherence) classification: that needs a working-set-size sweep, not
-    -- one run. Coherence misses specifically are covered by "perf: c2c".
-    -- LLC-load-misses is unsupported on this AMD desktop part (no amd_l3
-    -- uncore PMU exposed, verified via perf stat directly): the AMD path
-    -- substitutes l2_request_g1 counters instead, since L3 isn't
-    -- observable here at all.
+    -- Raw cache-miss surface, not a 4C classification (needs a working-set
+    -- sweep). Coherence misses are "perf: c2c"'s job. AMD path substitutes
+    -- l2_request_g1 for LLC-load-misses: no amd_l3 uncore PMU on this part.
     name = "perf: stat cache",
     desc = "Cache-miss surface across the hierarchy (not a 4C classification, see desc on each vendor path)",
     needs_bin = true,
@@ -637,10 +571,9 @@ local defs = {
     end,
   },
   {
-    -- Native L1 topdown (retiring/bad-speculation/frontend-bound/
-    -- backend-bound), no toplev.py install needed. Verified working via
-    -- "perf stat -M" on this AMD Zen4 (perf's --topdown flag itself only
-    -- works with Intel's native TopdownL1+ groups and errors here).
+    -- Native L1 topdown via perf's own -M metrics, no toplev.py needed.
+    -- perf's --topdown flag only works with Intel's TopdownL1+ groups and
+    -- errors on this AMD Zen4.
     name = "perf: stat topdown",
     desc = "Level-1 topdown breakdown via perf's own -M metrics, works without toplev",
     needs_bin = true,
@@ -657,11 +590,9 @@ local defs = {
     end,
   },
   {
-    -- Self-contained like c2c below: records fresh into /tmp/perf.data
-    -- each run instead of depending on a separate record task.
-    -- Without --percent-limit, perf report lists every symbol it ever
-    -- saw a sample for, including kernel/library noise at 0.00% overhead:
-    -- 700+ entries on a real run, only the top ~20 carrying any signal.
+    -- Self-contained: records fresh into /tmp/perf.data each run. Without
+    -- --percent-limit, perf report lists every symbol ever sampled (700+
+    -- entries of kernel/library noise), only the top ~20 carry any signal.
     name = "perf: report",
     needs_bin = true,
     takes_args = true,
@@ -678,14 +609,10 @@ local defs = {
     end,
   },
   {
-    -- A symbol narrows perf annotate to one function, shown in full: a
-    -- single function is naturally bounded, and every line stays in its
-    -- real sequence so the surrounding code still explains why a hot
-    -- instruction is hot. Without a symbol, --percent-limit is perf's own
-    -- function-selection cutoff: which functions get annotated at all,
-    -- not which lines inside a function survive. Neither path strips
-    -- lines out of a function's middle the way a line-level percent
-    -- filter would.
+    -- A symbol shows one full function, in sequence. Without one,
+    -- --percent-limit is perf's function-selection cutoff (which functions
+    -- get annotated), not a line-level filter — neither path strips lines
+    -- out of a function's middle.
     name = "perf: annotate",
     desc = "Give a symbol for one full function, or set min-percent to cap which functions get annotated",
     needs_bin = true,
@@ -721,10 +648,9 @@ local defs = {
     end,
   },
   {
-    -- One line per sampled event by design (this is the flamegraph
-    -- feedstock, not meant to be read directly): 20K+ lines on a real
-    -- run. Full output still goes to a file for actual tool use; only a
-    -- head sample is shown here.
+    -- One line per sampled event (flamegraph feedstock, not meant to be read
+    -- directly): 20K+ lines on a real run. Full output goes to a file, only
+    -- a head sample is shown here.
     name = "perf: script",
     desc = "Raw dump, feeds flamegraph tooling. Full output written to file, only a head sample shown",
     needs_bin = true,
@@ -772,11 +698,9 @@ local defs = {
     takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
-      -- PAGER=cat: perf c2c report doesn't fully honor --stdio and still
-      -- invokes $PAGER, which blocks waiting for a keypress overseer never
-      -- sends. Tried the interactive ncurses browser instead: same
-      -- hardcoded fixed-width table wrap, plus fragile to render inside
-      -- overseer's pane. Kept --stdio.
+      -- PAGER=cat: c2c report doesn't fully honor --stdio, still invokes
+      -- $PAGER and blocks. Tried the ncurses browser instead: same
+      -- fixed-width wrap, plus fragile inside overseer's pane. Kept --stdio.
       return {
         cmd = string.format(
           "PAGER=cat perf c2c record -- %s%s > /dev/null && PAGER=cat perf c2c report --stdio",
@@ -807,9 +731,8 @@ local defs = {
     end,
   },
   {
-    -- perf diff has no native size-limit flag (checked --help): same
-    -- handling as "perf: script"'s inherently unbounded output, full diff
-    -- written to a file, only a head sample shown here.
+    -- perf diff has no size-limit flag; same handling as "perf: script"'s
+    -- unbounded output — full diff to a file, only a head sample shown here.
     name = "perf: diff snapshot",
     desc = "Record fresh, diff against the last snapshot. Full diff written to file, only a head sample shown",
     needs_bin = true,
@@ -836,26 +759,16 @@ local defs = {
   -- bcc (Brendan Gregg's bpf tracing scripts), shown only when installed
   -----------------------------------------------------------------------------
   {
-    -- Without a duration, bcc tools run until Ctrl-C and only print on
-    -- exit, which looks like a stuck "pending" task in overseer. funccount
-    -- only attaches uprobes and counts, it never launches the target
-    -- itself, so it sees nothing unless something is calling those
-    -- functions during the window: "sudo -v" is its own statement (";",
-    -- not "&&") so it fully blocks in the foreground on the password
-    -- prompt first (a combined "sudo -v && ... &" backgrounds the whole
-    -- chain including sudo -v, letting the rest of the script race ahead
-    -- of the still-prompting sudo -- verified that exact race before
-    -- fixing it).
+    -- Without a duration, bcc tools run until Ctrl-C and print only on exit,
+    -- which looks like a stuck task. funccount only attaches uprobes/counts,
+    -- so it sees nothing unless the target runs during the window. "sudo -v"
+    -- is its own statement (";" not "&&"): it must block on the password
+    -- prompt before the rest races ahead (verified this race with "&&").
     --
-    -- Stops as soon as the binary finishes rather than making the user
-    -- guess a duration that outlasts it: -d/duration here is a safety
-    -- ceiling for a hung binary, not the real stop signal. "man sudo"
-    -- documents that sudo relays SIGINT to its child when sent by a user
-    -- process (which our own "kill -INT" is) over a pty (which overseer's
-    -- task pane is); verified with a compiled program that installs its
-    -- own SIGINT handler (matching how bcc's own "Hit Ctrl-C to exit"
-    -- implies it behaves) that a backgrounded job does receive and act on
-    -- kill -INT immediately from a non-interactive script.
+    -- Stops as soon as the binary exits rather than making the user guess a
+    -- duration; -d/duration is just a safety ceiling for a hung binary. sudo
+    -- relays SIGINT to its child over a pty (man sudo); verified a backgrounded
+    -- job does receive kill -INT immediately from a non-interactive script.
     name = "bcc: funccount",
     desc = "Runs the binary while attached, stops as soon as it exits: bcc funccount over its functions (needs root/bcc)",
     condition_callback = function()
@@ -887,21 +800,18 @@ local defs = {
       local pat = (p.pattern and p.pattern ~= "") and p.pattern or "*"
       local ceiling = (p.duration and p.duration ~= "") and p.duration or "300"
       local bin, ebin = resolve_bin(c, p)
-      -- A glob (contains * or ?) is passed straight through to bcc as-is,
-      -- same raw-symbol-table matching as before; a plain name goes
-      -- through RESOLVE_SYMBOL_SH like funclatency does, since bcc can't
-      -- match a readable C++ name against the mangled symbol table any
-      -- other way.
+      -- A glob (*/?) passes through to bcc as-is; a plain name resolves via
+      -- RESOLVE_SYMBOL_SH like funclatency, since bcc can't match a readable
+      -- C++ name against the mangled symbol table otherwise.
       local target_expr
       if pat:find "[*?]" then
         target_expr = "mangled=" .. vim.fn.shellescape(pat)
       else
         target_expr = "func=" .. vim.fn.shellescape(pat) .. "; " .. RESOLVE_SYMBOL_SH
       end
-      -- uprobe pattern form: '<binary>:<glob-or-symbol>'.
-      -- sudo: eBPF loading needs CAP_BPF/CAP_SYS_ADMIN and a raised
-      -- RLIMIT_MEMLOCK; overseer's task pane is a real pty so sudo can
-      -- prompt for the password there.
+      -- uprobe pattern: '<binary>:<glob-or-symbol>'. sudo: eBPF loading needs
+      -- CAP_BPF/CAP_SYS_ADMIN + raised RLIMIT_MEMLOCK; overseer's pane is a
+      -- real pty so sudo can prompt there.
       return {
         cmd = string.format(
           "sudo -v; bin=%s; %s; sudo %s \"$bin:$mangled\" %s & FLPID=$!; sleep 0.3; %s%s > /dev/null 2>&1; bin_status=$?; "
@@ -918,9 +828,8 @@ local defs = {
     end,
   },
   {
-    -- Same "runs the binary itself while attached" fix as funccount above.
-    -- Same "runs the binary itself while attached, stops when it exits"
-    -- fix as funccount above.
+    -- Same "runs the binary while attached, stops when it exits" fix as
+    -- funccount above.
     name = "bcc: funclatency",
     desc = "Runs the binary while attached, stops as soon as it exits: bcc funclatency histogram for one function (needs root/bcc)",
     condition_callback = function()
@@ -929,10 +838,9 @@ local defs = {
     needs_bin = true,
     takes_args = true,
     params = {
-      -- The libbpf-tools rewrite of funclatency (bcc-libbpf-tools on
-      -- Arch/EndeavourOS) takes a single exact PROGRAM:FUNCTION symbol, no
-      -- glob wildcards, and duration is -d, not a positional. Doesn't
-      -- match the old bcc-python funccount/funclatency-bpfcc syntax.
+      -- libbpf-tools rewrite (bcc-libbpf-tools on Arch/EndeavourOS) takes a
+      -- single exact PROGRAM:FUNCTION, no glob, duration via -d — different
+      -- syntax than the old bcc-python funclatency-bpfcc.
       func = {
         type = "string",
         name = "function",
@@ -980,8 +888,7 @@ local defs = {
   -----------------------------------------------------------------------------
   {
     -- gdb's disassemble /s interleaves source more reliably on optimized
-    -- code than objdump -dS, and degrades to address-only output when the
-    -- binary lacks -g.
+    -- code than objdump -dS, degrades to address-only without -g.
     name = "asm: disassemble",
     desc = "gdb disassemble /s. Reliable source interleaving even on optimized/SIMD code",
     needs_bin = true,
@@ -999,10 +906,8 @@ local defs = {
     end,
   },
   {
-    -- Plain objdump listing of one symbol: no gdb, no -g needed, no
-    -- source interleaving, no normalization. Distinct from "asm:
-    -- disassemble" above (gdb, source-interleaved, needs debug info): this
-    -- is the fast raw dump, addresses and mnemonics only.
+    -- Fast raw dump: no gdb, no -g needed, no interleaving/normalization.
+    -- Distinct from "asm: disassemble" above (gdb, source-interleaved, needs debug info).
     name = "asm: dump",
     desc = "Raw objdump listing of one symbol, addresses + mnemonics only",
     needs_bin = true,
@@ -1090,10 +995,9 @@ local defs = {
     end,
   },
   {
-    -- True Compiler-Explorer style view: compiles the current TU straight to
-    -- annotated asm, no link, no execute, no needs_bin. Distinct from "asm:
-    -- disassemble"/"asm: dump" above, which read the already-linked binary
-    -- (post-LTO/inlining across TUs) instead of one source file.
+    -- Compiler-Explorer style: compiles this TU straight to asm, no
+    -- link/execute. Distinct from "asm: disassemble"/"dump" above, which
+    -- read the already-linked (post-LTO/cross-TU-inlined) binary.
     name = "asm: compile view",
     desc = "Compile this TU straight to annotated asm (-S -fverbose-asm), no link/execute needed",
     build = function(c)
@@ -1114,23 +1018,14 @@ local defs = {
   -- the current buffer or a built binary)
   -----------------------------------------------------------------------------
   {
-    -- Whole-project HTML call/caller/include graph. GENERATE_HTML=YES
-    -- (rather than just emitting raw .dot files) since doxygen only keeps
-    -- the intermediate .dot graphs around long enough to render them into
-    -- an image during HTML/LaTeX generation; the browsable HTML site is
-    -- the actually-openable artifact. Verified working in a scratch test.
-    -- Doxygen's DOT_COMMON_ATTR only reaches the node/edge attribute lists
-    -- it emits (verified directly: splines is a graph-level graphviz
-    -- attribute, silently ignored when set there), so there's no Doxyfile
-    -- setting for edge routing. Worked around by keeping the intermediate
-    -- .dot files (DOT_CLEANUP=NO), injecting "splines=ortho;" as a graph
-    -- statement, and re-rendering each with dot ourselves, overwriting
-    -- doxygen's own straight-line SVG under the same filename its HTML
-    -- already links to. Orthogonal routing gives each edge a distinct
-    -- right-angle path instead of overlapping diagonals. DOT_GRAPH_MAX_NODES
-    -- lowered from doxygen's default (50) to 20: verified on a real 40+
-    -- edge fan-out function that this is what actually shrinks the tangle
-    -- (limiting call depth barely helped a wide-fanout graph in testing).
+    -- GENERATE_HTML=YES since doxygen only keeps intermediate .dot graphs
+    -- around long enough to render them; the HTML site is the real artifact.
+    -- No Doxyfile setting exists for edge routing (DOT_COMMON_ATTR doesn't
+    -- reach graph-level attrs like splines), so DOT_CLEANUP=NO keeps the
+    -- .dot files, injects "splines=ortho;", and re-renders each with dot,
+    -- overwriting doxygen's straight-line SVG under the same filename.
+    -- DOT_GRAPH_MAX_NODES lowered 50->20: this, not limiting call depth,
+    -- is what actually shrinks a wide fan-out tangle.
     name = "codebase: call graph",
     desc = "doxygen+dot call/caller/include graph (orthogonal routing, capped node count), HTML site to /tmp",
     condition_callback = function()
@@ -1177,10 +1072,12 @@ local defs = {
     end,
   },
   {
-    -- rg's own --stats footer natively answers "how many calls" (no
-    -- hand-rolled counting), -n gives "where" alongside it.
+    -- rg's own --stats footer natively answers "how many" (no hand-rolled
+    -- counting), -n gives "where" alongside it. Word-boundary only, no
+    -- trailing "(" -- catches calls, definitions, and non-call references
+    -- (e.g. taking a function's address) alike.
     name = "codebase: call sites",
-    desc = "Grep call sites for a symbol project-wide, with a native match/file count summary",
+    desc = "Grep all occurrences of a symbol project-wide, with a native match/file count summary",
     condition_callback = function()
       return vim.fn.executable "rg" == 1
     end,
@@ -1190,11 +1087,10 @@ local defs = {
     },
     prompts = { { key = "symbol", label = "Symbol: " } },
     build = function(_, p)
-      -- --color=always rather than relying on rg's own tty auto-detection,
-      -- so match highlighting is guaranteed regardless of how the pty
-      -- overseer spawns this in gets detected.
+      -- --color=always: rg's own tty auto-detection is unreliable in
+      -- overseer's spawned pty.
       return {
-        cmd = string.format("rg -n --stats --color=always %s", vim.fn.shellescape("\\b" .. p.symbol .. "\\s*\\(")),
+        cmd = string.format("rg -n --stats --color=always %s", vim.fn.shellescape("\\b" .. p.symbol .. "\\b")),
       }
     end,
   },
@@ -1222,16 +1118,10 @@ local defs = {
         .. CTAGS_EXTRACT_RANGE_AWK
         .. "' \"$file\"); "
         .. "start=${range%% *}; end=${range#* }; "
-      -- bat reads the real file by --line-range instead of extracted text
-      -- piped via stdin, so the gutter shows the code's actual line
-      -- numbers, not 1-based numbering of just the snippet. bat is an
-      -- enhancement, not a hard requirement: falls back to sed+nl (still
-      -- shows real line numbers, just no syntax color) rather than hiding
-      -- this whole task when bat isn't installed. --paging=never for the
-      -- same reason --no-pager is forced elsewhere: overseer's task pane
-      -- looks like a real tty and would otherwise hang waiting for a
-      -- pager keypress. --theme is generated fresh from the live
-      -- colorscheme (see sync_bat_theme above).
+      -- bat reads the real file via --line-range so the gutter shows actual
+      -- line numbers, not the snippet's own. Falls back to sed+nl (no syntax
+      -- color) if bat isn't installed. --paging=never: same tty-hang risk as
+      -- --no-pager elsewhere. --theme from sync_bat_theme above.
       if vim.fn.executable "bat" == 1 then
         local theme = sync_bat_theme()
         cmd = cmd .. 'bat --style=numbers --line-range="$start:$end" --language=cpp --color=always --paging=never'
@@ -1250,9 +1140,8 @@ local defs = {
   -- mca / uica: static throughput modeling on a disassembled symbol
   -----------------------------------------------------------------------------
   {
-    -- Split from the critical-path view below for readability: aggregate
-    -- stats and a per-instruction critical-path trace don't read well
-    -- mixed in one dump, and each needs different mca flags to stay small.
+    -- Split from the critical-path view below: aggregate stats and a
+    -- per-instruction trace don't read well mixed, and need different flags.
     name = "mca: throughput",
     desc = "Port pressure, dispatch/scheduler/retire stats. llvm-mca on the normalized disassembly",
     condition_callback = function()
@@ -1263,11 +1152,9 @@ local defs = {
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local sym = (p.symbol and p.symbol ~= "") and p.symbol or "main"
-      -- No -timeline, -instruction-info=false, -resource-pressure=false:
-      -- each is a per-instruction listing (thousands of lines on a whole
-      -- function). MCA_DROP_CRITSEQ removes the critical-sequence table
-      -- too (its own task below), leaving just the summary and the
-      -- -all-stats aggregate tables.
+      -- No -timeline/-instruction-info/-resource-pressure: each is a
+      -- thousands-of-lines per-instruction listing. MCA_DROP_CRITSEQ also
+      -- strips the critical-sequence table, leaving just summary + -all-stats.
       return {
         cmd = string.format(
           "%s | %s | { echo '.intel_syntax noprefix'; cat -; } | "
@@ -1335,7 +1222,7 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- pahole: struct/class layout (needs -g in the binary)
+  -- pahole: struct/class layout (needs -g)
   -----------------------------------------------------------------------------
   {
     name = "pahole: layout",
@@ -1384,10 +1271,9 @@ local defs = {
     end,
   },
   {
-    -- cachegrind is cut: it simulates a cache model that isn't the actual
-    -- hardware. "perf: stat microarch" measures the real cache/memory
-    -- behavior instead; callgrind gives deterministic instruction counts a
-    -- simulated cache model can't improve on.
+    -- cachegrind cut: it simulates a cache model, not real hardware.
+    -- "perf: stat microarch" covers actual cache/memory behavior; callgrind
+    -- gives deterministic instruction counts instead.
     name = "valgrind: callgrind",
     needs_bin = true,
     takes_args = true,
@@ -1407,9 +1293,8 @@ local defs = {
   },
   {
     -- --threshold=100 --auto=no: deterministic per-function Ir counts, no
-    -- auto-annotation noise. Snapshot + diff gives a noise-immune
-    -- before/after with no benchmark harness or core pinning. Slow but
-    -- exact.
+    -- auto-annotation noise. Noise-immune before/after with no benchmark
+    -- harness or core pinning needed — slow but exact.
     name = "valgrind: callgrind annotate",
     build = function()
       return { cmd = "callgrind_annotate --threshold=100 --auto=no $(ls -t /tmp/callgrind.out.* | head -1)" }
@@ -1467,10 +1352,8 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- likwid: HPC-standard grouped hardware counters. MEM_DP is the roofline/
-  -- ECM ingredient group (bandwidth + FLOPs); the ECM model itself (T_ECM =
-  -- max(T_OL, T_nOL + T_data)) is an analytical hand-model applied against
-  -- the loop kernel, not something one command outputs.
+  -- likwid: HPC-standard grouped hardware counters (MEM_DP = roofline/ECM
+  -- ingredients; the ECM model itself is a hand-applied analytical formula)
   -----------------------------------------------------------------------------
   {
     name = "likwid: perfctr",
@@ -1500,10 +1383,8 @@ local defs = {
   -- sde: Intel Software Development Emulator
   -----------------------------------------------------------------------------
   {
-    -- Deterministic dynamic instruction histogram by category/ISA
-    -- extension: a noise-free A/B metric. Snapshot + diff answers "did the
-    -- rewrite remove shuffles" with no benchmark harness or timing
-    -- discipline.
+    -- Deterministic instruction histogram by category/ISA extension: a
+    -- noise-free A/B metric for "did the rewrite remove shuffles".
     name = "sde: mix",
     condition_callback = function()
       return vim.fn.executable "sde64" == 1
@@ -1641,9 +1522,8 @@ local defs = {
   -- clang-tidy / static analysis (standalone file, no compile_commands.json)
   -----------------------------------------------------------------------------
   {
-    -- clang-tidy enables no checks by default; without a project
-    -- .clang-tidy file it just errors. Forces a default set so it works
-    -- standalone.
+    -- clang-tidy enables no checks by default and errors without a project
+    -- .clang-tidy file; forces a default set so it works standalone.
     name = "clang-tidy: check",
     build = function(c)
       return { cmd = { "clang-tidy", "--checks=" .. CLANG_TIDY_CHECKS, c.file, "--", STD } }
@@ -1708,11 +1588,9 @@ function M.setup()
     },
   }
 
-  -- Every task's output buffer gets filetype "OverseerOutput". Some output
-  -- (perf c2c's cacheline tables, sde -mix histograms) is wider than any
-  -- reasonable window; default wrap mangles it into ragged lines
-  -- regardless of window width. nowrap plus horizontal scroll (zl/zL, or
-  -- mouse sideways scroll) keeps rows intact.
+  -- Task output can be wider than any window (perf c2c tables, sde -mix
+  -- histograms); default wrap mangles rows. nowrap + horizontal scroll
+  -- (zl/zL) keeps them intact.
   vim.api.nvim_create_autocmd("FileType", {
     pattern = "OverseerOutput",
     desc = "Don't wrap wide task output (perf c2c, sde -mix, ...)",
@@ -1723,11 +1601,9 @@ function M.setup()
   })
 
   for _, def in ipairs(defs) do
-    -- needs_bin defs take an explicit binary path, and no_buffer defs
-    -- (codebase-wide tools: call graph, call sites, ...) operate on the
-    -- project tree, not the buffer, so neither needs a C/C++ file open.
-    -- Only compile/build tasks (which read the buffer as source) require
-    -- filetype cpp/c.
+    -- needs_bin/no_buffer defs (codebase-wide tools, or ones taking an
+    -- explicit binary) don't need a C/C++ buffer open; only compile/build
+    -- tasks reading the buffer as source require filetype cpp/c.
     local skip_buffer = def.needs_bin or def.no_buffer
     local condition = skip_buffer and {} or { filetype = { "cpp", "c" } }
     if def.condition_callback then
@@ -1769,10 +1645,8 @@ function M.setup()
       params = params,
       condition = condition,
       builder = function(params)
-        -- needs_bin/no_buffer defs never read the current buffer: ctx()
-        -- would return blank paths with no file open, so cwd falls back to
-        -- Neovim's own cwd instead (matches invoking the binary, or scanning
-        -- the project tree, from the project root).
+        -- needs_bin/no_buffer defs skip ctx() (blank paths with no file
+        -- open); cwd falls back to Neovim's own cwd instead.
         local c = skip_buffer and {} or ctx()
         local task = def.build(c, params)
         task.name = task.name or def.name
@@ -1782,10 +1656,9 @@ function M.setup()
             or { { "on_output_quickfix", open_on_error = true }, "default" }
         end
 
-        -- Every task's first output line is the literal command it's
-        -- running, and every task wrapping a binary shows that binary's
-        -- build age (defs can add more info_lines, e.g. a snapshot's own
-        -- age for the diff tasks) so a stale artifact is obvious upfront.
+        -- First output line is the literal command; a needs_bin task also
+        -- shows the binary's build age (defs can add more via info_lines,
+        -- e.g. a snapshot's own age) so a stale artifact is obvious upfront.
         local shell_cmd = to_shell_str(task.cmd)
         local info = { "+ " .. shorten_display(shell_cmd) }
         if def.needs_bin then
@@ -1863,11 +1736,8 @@ function M.telescope_run()
   -- it, not telescope's prompt buffer.
   local src_buf = vim.api.nvim_get_current_buf()
 
-  -- Every def with M._prompts[name] set walks the same chained
-  -- vim.ui.input flow, one field at a time (binary+args, a symbol, two
-  -- file paths, ...): the mechanism is identical, only the fields differ.
-  -- A blank required field cancels the whole task, same as before for a
-  -- blank binary path.
+  -- Chains vim.ui.input one field at a time; a blank required field
+  -- cancels the whole task.
   local function chain_prompts(overseer, name, prompts, idx, collected)
     local spec = prompts[idx]
     if not spec then

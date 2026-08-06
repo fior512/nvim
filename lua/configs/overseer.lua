@@ -16,7 +16,8 @@ M._names = {} -- template names, populated by M.setup(), consumed by the picker
 M._prompts = {}
 
 local STD = "-std=c++20"
-local CLANG_TIDY_CHECKS = "clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,modernize-*"
+-- performance-avoid-endl: "do not use 'std::endl' with streams" (clang-tidy >= 20)
+local CLANG_TIDY_CHECKS = "clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,modernize-*,-performance-avoid-endl"
 
 -- Paths derived from the current buffer, resolved at task-build time.
 local function ctx()

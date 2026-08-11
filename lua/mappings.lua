@@ -5,18 +5,45 @@ local map = vim.keymap.set
 map("n", ";", ":", { desc = "CMD enter command mode" })
 map("i", "jk", "<ESC>")
 
+-- `w`/`b` cross line boundaries by design. These keep the motion inside the
+-- current line and park on its edge instead of wrapping.
 local function bounded_word_motion(forward)
   local cur_line = vim.fn.line(".")
+  -- Measured *before* the motion: once `w` has crossed onto the next line,
+  -- col("$") reports that line's length, not the one we started on.
+  local eol = #vim.fn.getline(cur_line)
   vim.cmd(forward and "normal! w" or "normal! b")
-  local new_line = vim.fn.line(".")
-  if new_line ~= cur_line then
-    -- undo the line jump: go back and snap to end/start of original line
-    vim.fn.cursor(cur_line, forward and vim.fn.col("$") - 1 or 1)
+  if vim.fn.line(".") ~= cur_line then
+    -- eol + 1 is the true end-of-line column, reachable because options.lua
+    -- sets virtualedit=onemore. Without it this clamps back to eol.
+    vim.fn.cursor(cur_line, forward and eol + 1 or 1)
   end
 end
 
-vim.keymap.set({ "n", "v" }, "<S-Right>", function() bounded_word_motion(true) end)
-vim.keymap.set({ "n", "v" }, "<S-Left>", function() bounded_word_motion(false) end)
+-- Insert mode had no mapping for either pair, so it used the native motion,
+-- which crosses to the next line rather than stopping at the last word.
+-- <C-Right>/<C-Left> stay normal-mode window-resize (see below); only insert
+-- mode gets the word motion there.
+map({ "n", "x", "i" }, "<S-Right>", function() bounded_word_motion(true) end, { desc = "Word right, stop at end of line" })
+map({ "n", "x", "i" }, "<S-Left>", function() bounded_word_motion(false) end, { desc = "Word left, stop at start of line" })
+map("i", "<C-Right>", function() bounded_word_motion(true) end, { desc = "Word right, stop at end of line" })
+map("i", "<C-Left>", function() bounded_word_motion(false) end, { desc = "Word left, stop at start of line" })
+
+-- Tab indents. Normal mode's <Tab> is NvChad's tabufline "next buffer" and
+-- visual mode's is unmapped (so it fell through to <C-i> = jumplist forward,
+-- which reads as "the cursor just jumped somewhere"). Both now indent, and
+-- buffer cycling moves to <S-h>/<S-l>.
+map("n", "<Tab>", ">>", { desc = "Indent line" })
+map("n", "<S-Tab>", "<<", { desc = "Unindent line" })
+map("x", "<Tab>", ">gv", { desc = "Indent selection" })
+map("x", "<S-Tab>", "<gv", { desc = "Unindent selection" })
+
+map("n", "<S-l>", function()
+  require("nvchad.tabufline").next()
+end, { desc = "Buffer goto next" })
+map("n", "<S-h>", function()
+  require("nvchad.tabufline").prev()
+end, { desc = "Buffer goto prev" })
 
 -- Resize the focused window. Bound in both n and t mode: a terminal buffer
 -- (e.g. overseer's task pane) in terminal-mode never sees a normal-mode-only

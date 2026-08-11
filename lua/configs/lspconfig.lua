@@ -4,7 +4,14 @@ local servers = { "html", "cssls", "clangd", "ts_ls", "marksman", "julials" }
 vim.lsp.enable(servers)
 
 vim.lsp.config("clangd", {
-  cmd = { "clangd", "--offset-encoding=utf-16" }, -- avoids a common encoding warning with some clients
+  cmd = {
+    "clangd",
+    "--offset-encoding=utf-16", -- avoids a common encoding warning with some clients
+    "--background-index", -- index the whole project, not just open buffers
+    "--all-scopes-completion", -- suggest symbols not yet visible in scope
+    "--header-insertion=iwyu", -- auto-insert #include when accepting such a completion
+    "--completion-style=detailed",
+  },
 })
 
 vim.lsp.config("julials", {

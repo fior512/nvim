@@ -17,7 +17,9 @@ M._prompts = {}
 
 local STD = "-std=c++20"
 -- performance-avoid-endl: "do not use 'std::endl' with streams" (clang-tidy >= 20)
-local CLANG_TIDY_CHECKS = "clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,modernize-*,-performance-avoid-endl"
+-- bugprone-easily-swappable-parameters: "N adjacent parameters of similar type are easily swapped by accident"
+local CLANG_TIDY_CHECKS =
+  "clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,modernize-*,-performance-avoid-endl,-bugprone-easily-swappable-parameters"
 
 -- Paths derived from the current buffer, resolved at task-build time.
 local function ctx()

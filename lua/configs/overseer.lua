@@ -172,7 +172,7 @@ local function resolve_args(p)
   return ""
 end
 
--- "<date> (<age> ago)" for a file's mtime, or "not found" — surfaces stale
+-- "<date> (<age> ago)" for a file's mtime, or "not found" - surfaces stale
 -- binaries/snapshots before a task reads them.
 local function human_age(mtime)
   if not mtime or mtime <= 0 then
@@ -302,7 +302,7 @@ local SED_NORMALIZE =
 
 -- Must stay valid assembly for llvm-mca/uiCA, so unlike SED_NORMALIZE it
 -- can't blur addresses. Drops branch/call/ret/loop (targets undefined in
--- this snippet) — lossy on branchy code, but mca only models straight-line
+-- this snippet) - lossy on branchy code, but mca only models straight-line
 -- port/latency pressure anyway.
 local MCA_STRIP = "sed -E "
   .. "-e '/^[[:space:]]*$/d' "
@@ -614,7 +614,7 @@ local defs = {
   {
     -- A symbol shows one full function, in sequence. Without one,
     -- --percent-limit is perf's function-selection cutoff (which functions
-    -- get annotated), not a line-level filter — neither path strips lines
+    -- get annotated), not a line-level filter - neither path strips lines
     -- out of a function's middle.
     name = "perf: annotate",
     desc = "Give a symbol for one full function, or set min-percent to cap which functions get annotated",
@@ -735,7 +735,7 @@ local defs = {
   },
   {
     -- perf diff has no size-limit flag; same handling as "perf: script"'s
-    -- unbounded output — full diff to a file, only a head sample shown here.
+    -- unbounded output - full diff to a file, only a head sample shown here.
     name = "perf: diff snapshot",
     desc = "Record fresh, diff against the last snapshot. Full diff written to file, only a head sample shown",
     needs_bin = true,
@@ -842,7 +842,7 @@ local defs = {
     takes_args = true,
     params = {
       -- libbpf-tools rewrite (bcc-libbpf-tools on Arch/EndeavourOS) takes a
-      -- single exact PROGRAM:FUNCTION, no glob, duration via -d — different
+      -- single exact PROGRAM:FUNCTION, no glob, duration via -d - different
       -- syntax than the old bcc-python funclatency-bpfcc.
       func = {
         type = "string",
@@ -1297,7 +1297,7 @@ local defs = {
   {
     -- --threshold=100 --auto=no: deterministic per-function Ir counts, no
     -- auto-annotation noise. Noise-immune before/after with no benchmark
-    -- harness or core pinning needed — slow but exact.
+    -- harness or core pinning needed - slow but exact.
     name = "valgrind: callgrind annotate",
     build = function()
       return { cmd = "callgrind_annotate --threshold=100 --auto=no $(ls -t /tmp/callgrind.out.* | head -1)" }

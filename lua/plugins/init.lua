@@ -73,4 +73,19 @@ return {
       },
     },
   },
+  {
+    "danymat/neogen",
+    event = "VeryLazy",
+    config = function()
+      require("neogen").setup {
+        snippet_engine = "luasnip", -- NvChad ships LuaSnip: tab through [TODO:...] fields
+      }
+      -- neogen has no built-in keymaps (since v2.x), so we set our own:
+      -- <leader>c is only used by NvChad for ch/cheatsheet and cm/git-commits,
+      -- so "cg" ("c"omment "g"enerate) is conflict-free.
+      vim.keymap.set("n", "<leader>cg", function()
+        require("neogen").generate()
+      end, { desc = "Neogen annotate" })
+    end,
+  },
 }

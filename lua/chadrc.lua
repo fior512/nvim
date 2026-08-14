@@ -75,4 +75,12 @@
   },
 }
 
+M.ui = {
+  tabufline = {
+    -- default is { "treeOffset", "buffers", "tabs", "btns" } -- "btns" is the
+    -- theme-toggle + close-all-buffers pair on the right side of the top bar
+    order = { "treeOffset", "buffers", "tabs" },
+  },
+}
+
 return M

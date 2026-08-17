@@ -12,6 +12,17 @@ vim.lsp.config("clangd", {
     "--header-insertion=iwyu", -- auto-insert #include when accepting such a completion
     "--completion-style=detailed",
   },
+  settings = {
+    clangd = {
+      InlayHints = {
+        -- clangd >= 16: the `--inlay-hints` CLI flag is obsolete/ignored,
+        -- inlay hints are configured through LSP settings (or a .clangd file).
+        Enabled = "Yes",        -- master switch for inlay hints
+        DeducedTypes = "Yes",   -- show the REAL type of `auto` vars, e.g. `auto x: int = 1;`
+        ParameterNames = "Yes", -- show parameter names in function calls
+      },
+    },
+  },
 })
 
 vim.lsp.config("julials", {

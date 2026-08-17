@@ -63,3 +63,9 @@ map("n", "<leader>ot", "<cmd>OverseerToggle<cr>", { desc = "Overseer toggle task
 -- tab reopens a task's output in a different window.
 map("n", "<leader>oa", "<cmd>OverseerTaskAction<cr>", { desc = "Overseer pick task + action (e.g. open in split)" })
 map("n", "<leader>oi", "<cmd>OverseerInfo<cr>", { desc = "Overseer info / debug" })
+
+-- Inlay hints (clangd & co.): reveals the deduced type of `auto` variables
+-- and parameter names in calls. Toggle on/off with <leader>uh.
+map("n", "<leader>uh", function()
+  vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled())
+end, { desc = "Toggle inlay hints (auto type hints)" })

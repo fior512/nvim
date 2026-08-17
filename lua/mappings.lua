@@ -69,3 +69,20 @@ map("n", "<leader>oi", "<cmd>OverseerInfo<cr>", { desc = "Overseer info / debug"
 map("n", "<leader>uh", function()
   vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled())
 end, { desc = "Toggle inlay hints (auto type hints)" })
+
+-- ctags: (re)build the project-wide `tags` index asynchronously. This file is
+-- what powers cross-file function suggestions in nvim-cmp (cmp-nvim-tags).
+-- Tip: add `tags` to your project's .gitignore.
+map("n", "<leader>ct", function()
+  local cwd = vim.fn.getcwd()
+  vim.fn.jobstart("ctags -R .", {
+    cwd = cwd,
+    on_exit = function(_, code)
+      local ok = code == 0
+      vim.notify(
+        "ctags: index " .. (ok and "refreshed" or "FAILED") .. " in " .. cwd,
+        ok and vim.log.levels.INFO or vim.log.levels.ERROR
+      )
+    end,
+  })
+end, { desc = "Regenerate ctags index (project-wide)" })

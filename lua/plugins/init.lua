@@ -12,6 +12,23 @@ return {
       require "configs.lspconfig"
     end,
   },
+
+  -- Cross-file function suggestions: merges into NvChad's nvim-cmp spec.
+  -- lazy.nvim hands us NvChad's opts table, so we only append the new source.
+  -- Requires universal-ctags + a `tags` file in the project root
+  -- (generate with `ctags -R .` or <leader>ct).
+  {
+    "hrsh7th/nvim-cmp",
+    dependencies = {
+      "quangnguyen30192/cmp-nvim-tags",
+    },
+    opts = function(_, opts)
+      opts.sources = vim.list_extend(opts.sources, {
+        { name = "tags" }, -- functions/defs from ALL files in the directory
+      })
+      return opts
+    end,
+  },
   {
     'mrcjkb/rustaceanvim',
     version = '^9',

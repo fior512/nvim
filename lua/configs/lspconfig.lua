@@ -1,5 +1,15 @@
 require("nvchad.configs.lspconfig").defaults()
 
+-- Keep tag completion (cmp-nvim-tags) fast & deterministic: once an LSP server
+-- attaches, Neovim routes tag lookups through `vim.lsp.tagfunc` (workspace/symbol),
+-- which some servers (html, cssls) don't even support. Clearing it makes
+-- tag completion read the `tags` file directly. `gd`/`gD` still use LSP.
+vim.lsp.config("*", {
+  on_attach = function(_, bufnr)
+    vim.bo[bufnr].tagfunc = nil
+  end,
+})
+
 local servers = { "html", "cssls", "clangd", "ts_ls", "marksman", "julials" }
 vim.lsp.enable(servers)
 

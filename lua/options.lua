@@ -8,3 +8,8 @@ require "nvchad.options"
 -- (:h 'virtualedit' -- `onemore` is a real setting, but a few operators and
 -- plugins assume the classic invariant.)
 vim.opt.virtualedit = "onemore"
+
+-- ctags: look for `tags` next to the current file, walking up to the project
+-- root (`;`), then fall back to `tags` in the cwd. This is what lets nvim-cmp
+-- suggest functions from *every* file in the directory (via cmp-nvim-tags).
+vim.opt.tags = "./tags;tags"

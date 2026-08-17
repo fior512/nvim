@@ -105,4 +105,21 @@ return {
       end, { desc = "Neogen annotate" })
     end,
   },
+
+  -- Undo tree with diff preview: what `:undolist` wants to be. Shows the full
+  -- undo tree (all branches, not just the linear list) and, while you move
+  -- j/k over nodes, a preview of the file at that state with the exact lines
+  -- that differ from the current buffer marked +/- (UndotreeDiffAdded/Deleted).
+  -- <leader>u toggles the panel; <leader>uh (inlay hints) still works.
+  {
+    "jiaoshijie/undotree",
+    url = "git@github.com:jiaoshijie/undotree.git", -- only ssh clones on this machine
+    opts = {
+      float_diff = true, -- diff preview in a floating window
+      parser = "compact", -- compact tree style
+    },
+    keys = {
+      { "<leader>u", "<cmd>lua require('undotree').toggle()<cr>", desc = "Undo tree with diff preview" },
+    },
+  },
 }

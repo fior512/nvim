@@ -20,7 +20,9 @@ vim.lsp.config("clangd", {
     "--background-index", -- index the whole project, not just open buffers
     "--all-scopes-completion", -- suggest symbols not yet visible in scope
     "--header-insertion=iwyu", -- auto-insert #include when accepting such a completion
-    "--completion-style=detailed",
+    "--completion-style=bundled", -- compact display, still shows params (not verbose templates)
+    "--function-arg-placeholders=0", -- don't dump raw template types into the buffer as snippet args;
+    -- signature help (triggered by typing "(") still shows real parameters
   },
   settings = {
     clangd = {

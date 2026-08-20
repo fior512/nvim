@@ -211,13 +211,20 @@ local function to_shell_str(cmd)
 end
 
 -- Shortens absolute paths in the echoed preamble (never the command that
--- actually runs) relative to the cwd Neovim started in, then home.
+-- actually runs) relative to the cwd Neovim started in, then home. Also
+-- drops the single-quote shell-escaping around any token that doesn't
+-- actually need it (no space/quote inside) - shellescape wraps every arg
+-- for a table-form cmd regardless, which is correct for execution but
+-- leaves the echoed line full of 'foo' 'bar' quoting that's annoying to
+-- select/copy out of the task pane. task.cmd itself (what actually runs)
+-- is built from the unmodified shell_cmd elsewhere, so this is display-only.
 local function shorten_display(str)
   local cwd = vim.fn.getcwd()
   local out = str
   if cwd ~= "" then
     out = out:gsub(vim.pesc(cwd .. "/"), "")
   end
+  out = out:gsub("'([^'%s]+)'", "%1")
   local home = vim.fn.expand "$HOME"
   if home ~= "" and home ~= "$HOME" then
     out = out:gsub(vim.pesc(home), "~")

@@ -239,89 +239,30 @@ local BLOATY_SNAP_DIR = "/tmp/bloaty-snap"
 local PERF_SNAP_DIR = "/tmp/perf-snap"
 local OUTPUT_SNAP_DIR = "/tmp/output-snap"
 
--- "likwid: pick idle core" writes its recommendation here; every other
--- likwid task's core prompt reads it back as a dynamic default (falls back
--- to "0" until it's been run once this machine/session).
-local LIKWID_CORE_DIR = "/tmp/likwid-corepick"
-local LIKWID_CORE_FILE = LIKWID_CORE_DIR .. "/core.txt"
-
-local function likwid_core_default()
-  local ok, lines = pcall(vim.fn.readfile, LIKWID_CORE_FILE)
-  if ok and lines and lines[1] and lines[1]:match "^%d+$" then
-    return lines[1]
+-- Dropped the custom /proc/stat IQR core-picker: guessing "quiet" from tick
+-- counts was a weak proxy. likwid-perfctr already does this properly when
+-- given a core range instead of one core - it runs/measures on every core
+-- in the range and prints a Sum/Min/Max/Avg row per metric, so cross-core
+-- spread (the real noise signal) comes straight from likwid, no separate
+-- sampler needed. Default: every core but the last one, leaving it free for
+-- the OS/IRQs rather than pinning onto all of them.
+local function likwid_default_core_range()
+  local n = tonumber(vim.fn.system "nproc")
+  if not n or n <= 1 then
+    return "0"
   end
-  return "0"
+  return "0-" .. (n - 2)
 end
 
--- Samples /proc/stat across 9 short intervals to get each core's recent
--- busy fraction (user+system+irq+softirq, i.e. time NOT idle/iowait), then
--- for each core takes an IQR-trimmed mean of its samples (drops outlier
--- ticks from e.g. a passing cron job) so a core with a brief spike doesn't
--- look busier than one with steady low-grade scheduler/IRQ noise. The core
--- with the lowest trimmed-mean busy fraction is written out as the default
--- -C for every other likwid task - avoids pinning a benchmark onto whatever
--- core the kernel happens to be running housekeeping/IRQs on right now.
-local LIKWID_CORE_PICK_SH = [==[
-set -e
-dir=]==] .. LIKWID_CORE_DIR .. [==[
-mkdir -p "$dir"
-: > "$dir/samples.txt"
-declare -A ptotal pidle
-first=1
-for i in $(seq 1 9); do
-  declare -A total idle
-  while read -r cpu rest; do
-    case "$cpu" in
-      cpu[0-9]*)
-        core=${cpu#cpu}
-        read -r -a fields <<< "$rest"
-        t=0
-        for f in "${fields[@]}"; do t=$((t + f)); done
-        total[$core]=$t
-        idle[$core]=$(( fields[3] + fields[4] ))
-        ;;
-    esac
-  done < /proc/stat
-  if [ "$first" -eq 0 ]; then
-    for core in "${!total[@]}"; do
-      dt=$(( total[$core] - ptotal[$core] ))
-      di=$(( idle[$core] - pidle[$core] ))
-      if [ "$dt" -gt 0 ]; then
-        awk -v c="$core" -v dt="$dt" -v di="$di" 'BEGIN{printf "%s %.4f\n", c, (dt-di)/dt}' >> "$dir/samples.txt"
-      fi
-    done
-  fi
-  for core in "${!total[@]}"; do
-    ptotal[$core]=${total[$core]}
-    pidle[$core]=${idle[$core]}
-  done
-  first=0
-  sleep 0.12
-done
-awk '
-{ n[$1]++; v[$1, n[$1]] = $2 + 0 }
-END {
-  best_core = ""; best_score = ""
-  for (c in n) {
-    cnt = n[c]
-    for (i = 1; i <= cnt; i++) tmp[i] = v[c, i]
-    for (i = 1; i <= cnt; i++) for (j = i + 1; j <= cnt; j++) if (tmp[i] > tmp[j]) { t = tmp[i]; tmp[i] = tmp[j]; tmp[j] = t }
-    q1 = tmp[int((cnt + 1) / 4) + 1]; q3 = tmp[int(3 * (cnt + 1) / 4)]
-    iqr = q3 - q1; lo = q1 - 1.5 * iqr; hi = q3 + 1.5 * iqr
-    sum = 0; kept = 0
-    for (i = 1; i <= cnt; i++) if (tmp[i] >= lo && tmp[i] <= hi) { sum += tmp[i]; kept++ }
-    if (kept == 0) { for (i = 1; i <= cnt; i++) sum += tmp[i]; kept = cnt }
-    score = sum / kept
-    printf "core %s: IQR-trimmed busy %.2f%%\n", c, score * 100 > "/dev/stderr"
-    if (best_score == "" || score < best_score) { best_score = score; best_core = c }
-    delete tmp
-  }
-  print best_core
-}
-' "$dir/samples.txt" | tee "$dir/core.txt.new"
-mv "$dir/core.txt.new" "$dir/core.txt"
-echo "picked core: $(cat "$dir/core.txt") (now the default -C for other likwid tasks)"
-]==]
+-- watchcub (github.com/fior512/bash) puts the box into a known state for
+-- benchmarking - governor/boost/C-states/THP - and samples freq/temp/thread
+-- placement while a binary runs, so this file doesn't have to re-implement
+-- any of that itself. Not on PATH by default (see its README), hence the
+-- absolute path instead of relying on `executable("watchcub")`.
+local WATCHCUB = "/home/moonfloww/Projects/codebase/scripts/watchcub/watchcub.sh"
+local function watchcub_available()
+  return vim.fn.executable(WATCHCUB) == 1
+end
 
 local SYMBOL_PARAM = {
   symbol = { type = "string", name = "symbol", desc = "function symbol (blank = whole binary)", optional = true },
@@ -1527,21 +1468,15 @@ local defs = {
   -----------------------------------------------------------------------------
   -- likwid: HPC-standard grouped hardware counters (MEM_DP = roofline/ECM
   -- ingredients; the ECM model itself is a hand-applied analytical formula).
-  -- Every task below that pins to a core prompts for it (def.prompts, key
-  -- "core") defaulting to whatever "pick idle core" last recommended,
-  -- instead of hardcoding core 0.
   -----------------------------------------------------------------------------
   {
-    name = "likwid: pick idle core (IQR)",
-    desc = "Samples /proc/stat, IQR-trimmed busy%% per core, writes the quietest as the default -C below",
-    no_buffer = true,
-    build = function()
-      return { cmd = { "bash", "-c", LIKWID_CORE_PICK_SH } }
-    end,
-  },
-  {
+    -- Pass a core RANGE, not one core: likwid-perfctr then runs/measures on
+    -- every core in it and appends a Sum/Min/Max/Avg row per metric, so
+    -- cross-core spread - the actual noise - comes straight from likwid
+    -- instead of a guess made beforehand. Default excludes the last core
+    -- (see likwid_default_core_range), matching "most cores, not all".
     name = "likwid: perfctr",
-    desc = "Grouped HPC counters (bandwidth/FLOPs/cache/energy), feeds a roofline or ECM model by hand",
+    desc = "Grouped HPC counters (bandwidth/FLOPs/cache/energy) over a core range; the Sum/Min/Max/Avg row shows noise",
     condition_callback = function()
       return vim.fn.executable "likwid-perfctr" == 1
     end,
@@ -1556,7 +1491,7 @@ local defs = {
       },
     },
     prompts = {
-      { key = "core", label = "Core to pin (-C): ", default = likwid_core_default },
+      { key = "core", label = "Cores to pin (-C, e.g. 0-10 or 0,2,4): ", default = likwid_default_core_range },
     },
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
@@ -1596,25 +1531,35 @@ local defs = {
   {
     -- "-a" lists kernels/workgroups only when kernel is left blank, so a
     -- benchmark run and a "what's available" listing share one action.
+    -- ~140 kernels (clcopy/copy_avx512/daxpy_sse_fma/stream_mem_avx512/...);
+    -- typing one exactly from memory isn't realistic, so kernel is an enum
+    -- read from `likwid-bench -a` itself (not hardcoded - tracks whatever
+    -- version is actually installed) instead of a free-text field.
     name = "likwid: bench",
-    desc = "Microbenchmark kernel (blank kernel = list available kernels instead of running one)",
+    desc = "Microbenchmark kernel, picked from likwid-bench -a's own list",
     condition_callback = function()
       return vim.fn.executable "likwid-bench" == 1
     end,
     no_buffer = true,
-    params = {
-      kernel = { type = "string", name = "kernel", desc = "e.g. copy/load/store/stream (blank = list kernels)", optional = true },
-      workgroup = {
-        type = "string",
-        name = "workgroup",
-        desc = "domain:size:threads, e.g. S0:100MB:1",
-        default = "S0:100MB:1",
-      },
-    },
-    build = function(_, p)
-      if not p.kernel or p.kernel == "" then
-        return { cmd = { "likwid-bench", "-a" } }
+    params = function()
+      local choices = {}
+      for _, line in ipairs(vim.fn.systemlist { "likwid-bench", "-a" }) do
+        local name = line:match "^(%S+)%s+%-"
+        if name then
+          choices[#choices + 1] = name
+        end
       end
+      return {
+        kernel = { type = "enum", name = "kernel", choices = choices, default = choices[1] },
+        workgroup = {
+          type = "string",
+          name = "workgroup",
+          desc = "domain:size:threads, e.g. S0:100MB:1",
+          default = "S0:100MB:1",
+        },
+      }
+    end,
+    build = function(_, p)
       return { cmd = { "likwid-bench", "-t", p.kernel, "-w", p.workgroup } }
     end,
   },
@@ -1627,7 +1572,7 @@ local defs = {
     needs_bin = true,
     takes_args = true,
     prompts = {
-      { key = "core", label = "Core to pin (-c): ", default = likwid_core_default },
+      { key = "core", label = "Core to pin (-c): ", default = "0" },
     },
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
@@ -1637,6 +1582,9 @@ local defs = {
     end,
   },
   {
+    -- -c is a SOCKET id here, not a core (RAPL power domains are per-package,
+    -- not per-thread) - likwid-pin/-perfctr's -c is cores, this one isn't.
+    -- Single-socket boxes: always 0.
     name = "likwid: powermeter",
     desc = "RAPL energy/power for the run (needs RAPL access)",
     condition_callback = function()
@@ -1645,12 +1593,12 @@ local defs = {
     needs_bin = true,
     takes_args = true,
     prompts = {
-      { key = "core", label = "Core to pin (-c): ", default = likwid_core_default },
+      { key = "socket", label = "Socket to measure (-c, not a core - 0 on single-socket boxes): ", default = "0" },
     },
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
-        cmd = string.format("likwid-powermeter -c %s %s%s", vim.fn.shellescape(p.core), ebin, resolve_args(p)),
+        cmd = string.format("likwid-powermeter -c %s %s%s", vim.fn.shellescape(p.socket), ebin, resolve_args(p)),
       }
     end,
   },
@@ -1663,6 +1611,96 @@ local defs = {
     no_buffer = true,
     build = function()
       return { cmd = { "likwid-memsweeper" } }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- watchcub: sets/reverts machine state for benchmarking (governor, boost,
+  -- C-states, THP, ...) and samples freq/temp/thread placement during a run.
+  -----------------------------------------------------------------------------
+  {
+    name = "watchcub: status",
+    desc = "Dump current CPU/kernel/GPU/thermal settings (read-only, no root)",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    build = function()
+      return { cmd = { WATCHCUB, "status" } }
+    end,
+  },
+  {
+    -- Root-readable RAPL power line is skipped (not printed, not an error)
+    -- without sudo - everything else (usage/freq/governor per thread) works
+    -- either way.
+    name = "watchcub: core",
+    desc = "Per-thread usage%/freq/governor snapshot, plus package temp/power if run as root",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    build = function()
+      return { cmd = { WATCHCUB, "core" } }
+    end,
+  },
+  {
+    name = "watchcub: verify",
+    desc = "Pre-flight: governor, load, RAM, swap, temp, steal, dirty pages (no root)",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    params = {
+      flags = { type = "string", name = "flags", desc = "extra flags, e.g. --temp-warn=70 (blank = defaults)", optional = true },
+    },
+    build = function(_, p)
+      local flags = (p.flags and p.flags ~= "") and (" " .. p.flags) or ""
+      return { cmd = string.format("%s verify%s", WATCHCUB, flags) }
+    end,
+  },
+  {
+    name = "watchcub: bench",
+    desc = "Save current state, apply the performance profile (root; refuses to double-apply)",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    params = {
+      flags = { type = "string", name = "flags", desc = "extra flags, e.g. --turbo=off --smt=off (blank = defaults)", optional = true },
+    },
+    build = function(_, p)
+      local flags = (p.flags and p.flags ~= "") and (" " .. p.flags) or ""
+      return { cmd = string.format("sudo -v; sudo %s bench%s", WATCHCUB, flags) }
+    end,
+  },
+  {
+    name = "watchcub: run",
+    desc = "Run the binary, sampling per-core frequency/temperature/thread placement",
+    condition_callback = watchcub_available,
+    needs_bin = true,
+    takes_args = true,
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return { cmd = string.format("%s run -- %s%s", WATCHCUB, ebin, resolve_args(p)) }
+    end,
+  },
+  {
+    name = "watchcub: restore",
+    desc = "Revert every value bench/trace-unlock changed, delete the state dir (root)",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    build = function()
+      return { cmd = string.format("sudo -v; sudo %s restore", WATCHCUB) }
+    end,
+  },
+  {
+    name = "watchcub: trace-unlock",
+    desc = "Loosen perf_event_paranoid/kptr_restrict/ptrace scope/eBPF JIT for perf/VTune sessions (root)",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    build = function()
+      return { cmd = string.format("sudo -v; sudo %s trace-unlock", WATCHCUB) }
+    end,
+  },
+  {
+    name = "watchcub: trace-lock",
+    desc = "Re-tighten what trace-unlock loosened (root)",
+    condition_callback = watchcub_available,
+    no_buffer = true,
+    build = function()
+      return { cmd = string.format("sudo -v; sudo %s trace-lock", WATCHCUB) }
     end,
   },
 

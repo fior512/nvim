@@ -42,6 +42,14 @@ map("n", "<S-Tab>", "<<", { desc = "Unindent line" })
 map("x", "<Tab>", ">gv", { desc = "Indent selection" })
 map("x", "<S-Tab>", "<gv", { desc = "Unindent selection" })
 
+-- gg=G re-indents the whole file but also yanks the view to the top since
+-- gg/G move the cursor. Save/restore the view so only the indentation changes.
+map("n", "<leader>=", function()
+  local view = vim.fn.winsaveview()
+  vim.cmd "normal! gg=G"
+  vim.fn.winrestview(view)
+end, { desc = "Re-indent whole file, keep cursor/scroll position" })
+
 map("n", "<S-l>", function()
   require("nvchad.tabufline").next()
 end, { desc = "Buffer goto next" })

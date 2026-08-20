@@ -2,6 +2,10 @@ require "nvchad.mappings"
 
 local map = vim.keymap.set
 
+-- NvChad maps <C-s> to :w by default, which steals the keystroke clangd
+-- uses to cycle signature help overloads. Free it up.
+vim.keymap.del("n", "<C-s>")
+
 map("n", ";", ":", { desc = "CMD enter command mode" })
 map("i", "jk", "<ESC>")
 

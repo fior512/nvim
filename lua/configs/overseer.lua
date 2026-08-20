@@ -14,12 +14,17 @@ M._names = {} -- template names, populated by M.setup(), consumed by the picker
 -- name -> ordered list of { key, label, completion?, default? } prompts,
 -- consumed by the chained vim.ui.input flow in the telescope picker below.
 M._prompts = {}
+-- Every def.name is "Group: action" (e.g. "perf: stat"); the two-level
+-- telescope picker groups by the part before ": " so the top-level list
+-- shows one entry per tool instead of every action flattened together.
+-- M._group_order: tool names in first-seen order.
+-- M._by_group[tool] = ordered list of { name = full template name, action = label after ": " }.
+M._group_order = {}
+M._by_group = {}
 
 local STD = "-std=c++20"
 -- performance-avoid-endl: "do not use 'std::endl' with streams" (clang-tidy >= 20)
 -- bugprone-easily-swappable-parameters: "N adjacent parameters of similar type are easily swapped by accident"
-local CLANG_TIDY_CHECKS =
-  "clang-diagnostic-*,clang-analyzer-*,bugprone-*,performance-*,modernize-*,-performance-avoid-endl,-bugprone-easily-swappable-parameters"
 
 -- Paths derived from the current buffer, resolved at task-build time.
 local function ctx()
@@ -226,6 +231,90 @@ local ASM_SNAP_DIR = "/tmp/asm-snap"
 local BLOATY_SNAP_DIR = "/tmp/bloaty-snap"
 local PERF_SNAP_DIR = "/tmp/perf-snap"
 local OUTPUT_SNAP_DIR = "/tmp/output-snap"
+
+-- "likwid: pick idle core" writes its recommendation here; every other
+-- likwid task's core prompt reads it back as a dynamic default (falls back
+-- to "0" until it's been run once this machine/session).
+local LIKWID_CORE_DIR = "/tmp/likwid-corepick"
+local LIKWID_CORE_FILE = LIKWID_CORE_DIR .. "/core.txt"
+
+local function likwid_core_default()
+  local ok, lines = pcall(vim.fn.readfile, LIKWID_CORE_FILE)
+  if ok and lines and lines[1] and lines[1]:match "^%d+$" then
+    return lines[1]
+  end
+  return "0"
+end
+
+-- Samples /proc/stat across 9 short intervals to get each core's recent
+-- busy fraction (user+system+irq+softirq, i.e. time NOT idle/iowait), then
+-- for each core takes an IQR-trimmed mean of its samples (drops outlier
+-- ticks from e.g. a passing cron job) so a core with a brief spike doesn't
+-- look busier than one with steady low-grade scheduler/IRQ noise. The core
+-- with the lowest trimmed-mean busy fraction is written out as the default
+-- -C for every other likwid task - avoids pinning a benchmark onto whatever
+-- core the kernel happens to be running housekeeping/IRQs on right now.
+local LIKWID_CORE_PICK_SH = [==[
+set -e
+dir=]==] .. LIKWID_CORE_DIR .. [==[
+mkdir -p "$dir"
+: > "$dir/samples.txt"
+declare -A ptotal pidle
+first=1
+for i in $(seq 1 9); do
+  declare -A total idle
+  while read -r cpu rest; do
+    case "$cpu" in
+      cpu[0-9]*)
+        core=${cpu#cpu}
+        read -r -a fields <<< "$rest"
+        t=0
+        for f in "${fields[@]}"; do t=$((t + f)); done
+        total[$core]=$t
+        idle[$core]=$(( fields[3] + fields[4] ))
+        ;;
+    esac
+  done < /proc/stat
+  if [ "$first" -eq 0 ]; then
+    for core in "${!total[@]}"; do
+      dt=$(( total[$core] - ptotal[$core] ))
+      di=$(( idle[$core] - pidle[$core] ))
+      if [ "$dt" -gt 0 ]; then
+        awk -v c="$core" -v dt="$dt" -v di="$di" 'BEGIN{printf "%s %.4f\n", c, (dt-di)/dt}' >> "$dir/samples.txt"
+      fi
+    done
+  fi
+  for core in "${!total[@]}"; do
+    ptotal[$core]=${total[$core]}
+    pidle[$core]=${idle[$core]}
+  done
+  first=0
+  sleep 0.12
+done
+awk '
+{ n[$1]++; v[$1, n[$1]] = $2 + 0 }
+END {
+  best_core = ""; best_score = ""
+  for (c in n) {
+    cnt = n[c]
+    for (i = 1; i <= cnt; i++) tmp[i] = v[c, i]
+    for (i = 1; i <= cnt; i++) for (j = i + 1; j <= cnt; j++) if (tmp[i] > tmp[j]) { t = tmp[i]; tmp[i] = tmp[j]; tmp[j] = t }
+    q1 = tmp[int((cnt + 1) / 4) + 1]; q3 = tmp[int(3 * (cnt + 1) / 4)]
+    iqr = q3 - q1; lo = q1 - 1.5 * iqr; hi = q3 + 1.5 * iqr
+    sum = 0; kept = 0
+    for (i = 1; i <= cnt; i++) if (tmp[i] >= lo && tmp[i] <= hi) { sum += tmp[i]; kept++ }
+    if (kept == 0) { for (i = 1; i <= cnt; i++) sum += tmp[i]; kept = cnt }
+    score = sum / kept
+    printf "core %s: IQR-trimmed busy %.2f%%\n", c, score * 100 > "/dev/stderr"
+    if (best_score == "" || score < best_score) { best_score = score; best_core = c }
+    delete tmp
+  }
+  print best_core
+}
+' "$dir/samples.txt" | tee "$dir/core.txt.new"
+mv "$dir/core.txt.new" "$dir/core.txt"
+echo "picked core: $(cat "$dir/core.txt") (now the default -C for other likwid tasks)"
+]==]
 
 local SYMBOL_PARAM = {
   symbol = { type = "string", name = "symbol", desc = "function symbol (blank = whole binary)", optional = true },
@@ -1356,11 +1445,22 @@ local defs = {
 
   -----------------------------------------------------------------------------
   -- likwid: HPC-standard grouped hardware counters (MEM_DP = roofline/ECM
-  -- ingredients; the ECM model itself is a hand-applied analytical formula)
+  -- ingredients; the ECM model itself is a hand-applied analytical formula).
+  -- Every task below that pins to a core prompts for it (def.prompts, key
+  -- "core") defaulting to whatever "pick idle core" last recommended,
+  -- instead of hardcoding core 0.
   -----------------------------------------------------------------------------
   {
+    name = "likwid: pick idle core (IQR)",
+    desc = "Samples /proc/stat, IQR-trimmed busy%% per core, writes the quietest as the default -C below",
+    no_buffer = true,
+    build = function()
+      return { cmd = { "bash", "-c", LIKWID_CORE_PICK_SH } }
+    end,
+  },
+  {
     name = "likwid: perfctr",
-    desc = "Grouped HPC counters (bandwidth/FLOPs/cache), feeds a roofline or ECM model by hand",
+    desc = "Grouped HPC counters (bandwidth/FLOPs/cache/energy), feeds a roofline or ECM model by hand",
     condition_callback = function()
       return vim.fn.executable "likwid-perfctr" == 1
     end,
@@ -1370,15 +1470,118 @@ local defs = {
       group = {
         type = "enum",
         name = "group",
-        choices = { "MEM_DP", "L2CACHE", "L3CACHE" },
+        choices = { "MEM_DP", "L2CACHE", "L3CACHE", "FLOPS_DP", "FLOPS_SP", "CACHES", "ENERGY" },
         default = "MEM_DP",
       },
+    },
+    prompts = {
+      { key = "core", label = "Core to pin (-C): ", default = likwid_core_default },
     },
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       return {
-        cmd = string.format("likwid-perfctr -C 0 -g %s -- %s%s", vim.fn.shellescape(p.group), ebin, resolve_args(p)),
+        cmd = string.format(
+          "likwid-perfctr -C %s -g %s -- %s%s",
+          vim.fn.shellescape(p.core),
+          vim.fn.shellescape(p.group),
+          ebin,
+          resolve_args(p)
+        ),
       }
+    end,
+  },
+  {
+    name = "likwid: topology",
+    desc = "CPU/cache/NUMA topology (likwid-topology -g)",
+    condition_callback = function()
+      return vim.fn.executable "likwid-topology" == 1
+    end,
+    no_buffer = true,
+    build = function()
+      return { cmd = { "likwid-topology", "-g" } }
+    end,
+  },
+  {
+    name = "likwid: features",
+    desc = "CPU-level features (prefetchers, etc.), likwid-features -l",
+    condition_callback = function()
+      return vim.fn.executable "likwid-features" == 1
+    end,
+    no_buffer = true,
+    build = function()
+      return { cmd = { "likwid-features", "-l" } }
+    end,
+  },
+  {
+    -- "-a" lists kernels/workgroups only when kernel is left blank, so a
+    -- benchmark run and a "what's available" listing share one action.
+    name = "likwid: bench",
+    desc = "Microbenchmark kernel (blank kernel = list available kernels instead of running one)",
+    condition_callback = function()
+      return vim.fn.executable "likwid-bench" == 1
+    end,
+    no_buffer = true,
+    params = {
+      kernel = { type = "string", name = "kernel", desc = "e.g. copy/load/store/stream (blank = list kernels)", optional = true },
+      workgroup = {
+        type = "string",
+        name = "workgroup",
+        desc = "domain:size:threads, e.g. S0:100MB:1",
+        default = "S0:100MB:1",
+      },
+    },
+    build = function(_, p)
+      if not p.kernel or p.kernel == "" then
+        return { cmd = { "likwid-bench", "-a" } }
+      end
+      return { cmd = { "likwid-bench", "-t", p.kernel, "-w", p.workgroup } }
+    end,
+  },
+  {
+    name = "likwid: pin",
+    desc = "Run the binary pinned to a core (likwid-pin), no counters collected",
+    condition_callback = function()
+      return vim.fn.executable "likwid-pin" == 1
+    end,
+    needs_bin = true,
+    takes_args = true,
+    prompts = {
+      { key = "core", label = "Core to pin (-c): ", default = likwid_core_default },
+    },
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return {
+        cmd = string.format("likwid-pin -c %s %s%s", vim.fn.shellescape(p.core), ebin, resolve_args(p)),
+      }
+    end,
+  },
+  {
+    name = "likwid: powermeter",
+    desc = "RAPL energy/power for the run (needs RAPL access)",
+    condition_callback = function()
+      return vim.fn.executable "likwid-powermeter" == 1
+    end,
+    needs_bin = true,
+    takes_args = true,
+    prompts = {
+      { key = "core", label = "Core to pin (-c): ", default = likwid_core_default },
+    },
+    build = function(c, p)
+      local _, ebin = resolve_bin(c, p)
+      return {
+        cmd = string.format("likwid-powermeter -c %s %s%s", vim.fn.shellescape(p.core), ebin, resolve_args(p)),
+      }
+    end,
+  },
+  {
+    name = "likwid: memsweeper",
+    desc = "Evict this process's data from cache/NUMA-local memory before a clean-state benchmark run",
+    condition_callback = function()
+      return vim.fn.executable "likwid-memsweeper" == 1
+    end,
+    no_buffer = true,
+    build = function()
+      return { cmd = { "likwid-memsweeper" } }
     end,
   },
 
@@ -1522,39 +1725,116 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- clang-tidy / static analysis (standalone file, no compile_commands.json)
+  -- tidy: clang-tidy split into categories (standalone file, no
+  -- compile_commands.json). Each is check-only (no --fix): findings are
+  -- reviewed, not auto-applied, and every task below runs on this one file
+  -- only - never a project-wide/header-expanding sweep.
   -----------------------------------------------------------------------------
   {
-    -- clang-tidy enables no checks by default and errors without a project
-    -- .clang-tidy file; forces a default set so it works standalone.
-    name = "clang-tidy: check",
+    -- UB/lifetime/bug-prone patterns: static analyzer, bugprone-*, plus the
+    -- CERT and Core Guidelines alias groups (mostly re-point at bugprone/
+    -- cppcoreguidelines checks already covered elsewhere, so overlap with
+    -- the other tidy categories is expected).
+    name = "tidy: safety",
+    desc = "clang-analyzer-*, bugprone-*, cert-*, cppcoreguidelines-*",
     build = function(c)
-      return { cmd = { "clang-tidy", "--checks=" .. CLANG_TIDY_CHECKS, c.file, "--", STD } }
+      local checks = "clang-analyzer-*,bugprone-*,cert-*,cppcoreguidelines-*,-bugprone-easily-swappable-parameters"
+      return { cmd = { "clang-tidy", "--checks=" .. checks, c.file, "--", STD } }
     end,
   },
   {
-    name = "clang-tidy: fix",
+    name = "tidy: performance",
+    desc = "performance-*",
     build = function(c)
-      return { cmd = { "clang-tidy", "--checks=" .. CLANG_TIDY_CHECKS, c.file, "--fix", "--", STD } }
+      return { cmd = { "clang-tidy", "--checks=performance-*,-performance-avoid-endl", c.file, "--", STD } }
     end,
   },
   {
-    -- Different static-analysis heuristics than clang-tidy above (array
-    -- bounds, uninitialized use, portability), worth running both.
-    name = "cppcheck: check",
+    name = "tidy: readability",
+    desc = "readability-*",
+    build = function(c)
+      return { cmd = { "clang-tidy", "--checks=readability-*", c.file, "--", STD } }
+    end,
+  },
+  {
+    name = "tidy: modernize",
+    desc = "modernize-*",
+    build = function(c)
+      return { cmd = { "clang-tidy", "--checks=modernize-*", c.file, "--", STD } }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- cppcheck: different static-analysis heuristics than clang-tidy (array
+  -- bounds, uninitialized use, portability) - worth running both. Same
+  -- category split and single-file scope as the tidy group above.
+  -----------------------------------------------------------------------------
+  {
+    name = "cppcheck: safety",
+    desc = "--enable=warning,portability (UB, likely bugs, non-portable constructs)",
     condition_callback = function()
       return vim.fn.executable "cppcheck" == 1
     end,
     build = function(c)
-      return {
-        cmd = {
-          "cppcheck",
-          "--enable=warning,performance,portability,style",
-          "--std=c++20",
-          "--language=c++",
-          c.file,
-        },
-      }
+      return { cmd = { "cppcheck", "--enable=warning,portability", "--std=c++20", "--language=c++", c.file } }
+    end,
+  },
+  {
+    name = "cppcheck: performance",
+    desc = "--enable=performance",
+    condition_callback = function()
+      return vim.fn.executable "cppcheck" == 1
+    end,
+    build = function(c)
+      return { cmd = { "cppcheck", "--enable=performance", "--std=c++20", "--language=c++", c.file } }
+    end,
+  },
+  {
+    name = "cppcheck: style",
+    desc = "--enable=style",
+    condition_callback = function()
+      return vim.fn.executable "cppcheck" == 1
+    end,
+    build = function(c)
+      return { cmd = { "cppcheck", "--enable=style", "--std=c++20", "--language=c++", c.file } }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- lint: other single-purpose C++ static-analysis/lint tools, each its own
+  -- action, shown only when installed
+  -----------------------------------------------------------------------------
+  {
+    -- Reports headers this TU actually uses vs. what it #includes; needs a
+    -- compile command, standalone -std flag is enough for a single TU.
+    name = "lint: include-what-you-use",
+    desc = "Over-/under-included headers for this TU (iwyu)",
+    condition_callback = function()
+      return vim.fn.executable "include-what-you-use" == 1 or vim.fn.executable "iwyu" == 1
+    end,
+    build = function(c)
+      local tool = pick { "include-what-you-use", "iwyu" }
+      return { cmd = { tool, "-std=c++20", c.file } }
+    end,
+  },
+  {
+    name = "lint: cpplint",
+    desc = "Google C++ style checker",
+    condition_callback = function()
+      return vim.fn.executable "cpplint" == 1
+    end,
+    build = function(c)
+      return { cmd = { "cpplint", c.file } }
+    end,
+  },
+  {
+    name = "lint: cppclean",
+    desc = "Unused/dead declarations, unnecessary includes",
+    condition_callback = function()
+      return vim.fn.executable "cppclean" == 1
+    end,
+    build = function(c)
+      return { cmd = { "cppclean", c.file } }
     end,
   },
 
@@ -1690,6 +1970,16 @@ function M.setup()
     if not def.condition_callback or def.condition_callback() then
       M._names[#M._names + 1] = def.name
 
+      local group, action = def.name:match "^(.-): (.+)$"
+      group = group or def.name
+      action = action or def.name
+      if not M._by_group[group] then
+        M._by_group[group] = {}
+        M._group_order[#M._group_order + 1] = group
+      end
+      local group_list = M._by_group[group]
+      group_list[#group_list + 1] = { name = def.name, action = action }
+
       -- needs_bin/takes_args auto-generate their prompts (binary path with
       -- file completion, then optional args); any def can also declare its
       -- own def.prompts (e.g. codebase: * asking for a symbol) which are
@@ -1747,7 +2037,13 @@ function M.telescope_run()
       overseer.run_task { name = name, params = collected }
       return
     end
-    vim.ui.input({ prompt = spec.label, default = spec.default, completion = spec.completion }, function(value)
+    -- spec.default may be a function (e.g. likwid's quiet-core pick, which
+    -- must be re-read fresh each time rather than baked in at setup()).
+    local default = spec.default
+    if type(default) == "function" then
+      default = default()
+    end
+    vim.ui.input({ prompt = spec.label, default = default, completion = spec.completion }, function(value)
       if (not value or value == "") and spec.required ~= false then
         return
       end
@@ -1756,41 +2052,92 @@ function M.telescope_run()
     end)
   end
 
-  -- Size the picker to the longest template name plus padding, capped at
-  -- 75% of the terminal width.
-  local longest = 0
-  for _, n in ipairs(M._names) do
-    longest = math.max(longest, #n)
+  -- Size a picker to its longest entry plus padding, capped at 75% of the
+  -- terminal width. Shared by both the tool-level and action-level pickers.
+  local function width_for(strs)
+    local longest = 0
+    for _, s in ipairs(strs) do
+      longest = math.max(longest, #s)
+    end
+    return math.min(longest + 30, math.floor(vim.o.columns * 0.75))
   end
-  local width = math.min(longest + 30, math.floor(vim.o.columns * 0.75))
 
-  pickers
-    .new(themes.get_dropdown { layout_config = { width = width, height = 0.6 } }, {
-      prompt_title = "Overseer: C/C++ tasks",
-      finder = finders.new_table { results = M._names },
-      sorter = conf.generic_sorter {},
-      attach_mappings = function(prompt_bufnr)
-        actions.select_default:replace(function()
-          local entry = action_state.get_selected_entry()
-          actions.close(prompt_bufnr)
-          if not entry then
-            return
-          end
-          if vim.api.nvim_buf_is_valid(src_buf) then
-            vim.api.nvim_set_current_buf(src_buf)
-          end
-          local name = entry[1]
-          local prompts = M._prompts[name]
-          if prompts then
-            chain_prompts(overseer, name, prompts, 1, {})
-          else
-            overseer.run_task { name = name }
-          end
-        end)
-        return true
-      end,
-    })
-    :find()
+  local function run_selected(name)
+    if vim.api.nvim_buf_is_valid(src_buf) then
+      vim.api.nvim_set_current_buf(src_buf)
+    end
+    local prompts = M._prompts[name]
+    if prompts then
+      chain_prompts(overseer, name, prompts, 1, {})
+    else
+      overseer.run_task { name = name }
+    end
+  end
+
+  -- Second level: scrollable list of actions for one tool. <BS> on an
+  -- empty prompt backs out to the tool list instead of closing outright.
+  local function open_actions(group)
+    local entries = M._by_group[group]
+    local labels = {}
+    for _, e in ipairs(entries) do
+      labels[#labels + 1] = e.action
+    end
+    local by_label = {}
+    for _, e in ipairs(entries) do
+      by_label[e.action] = e.name
+    end
+
+    pickers
+      .new(themes.get_dropdown { layout_config = { width = width_for(labels), height = 0.6 } }, {
+        prompt_title = "Overseer: " .. group,
+        finder = finders.new_table { results = labels },
+        sorter = conf.generic_sorter {},
+        attach_mappings = function(prompt_bufnr, map)
+          actions.select_default:replace(function()
+            local entry = action_state.get_selected_entry()
+            actions.close(prompt_bufnr)
+            if not entry then
+              return
+            end
+            run_selected(by_label[entry[1]])
+          end)
+          map({ "i", "n" }, "<bs>", function()
+            if action_state.get_current_line() == "" then
+              actions.close(prompt_bufnr)
+              M._open_tools()
+            else
+              vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<bs>", true, false, true), "n", true)
+            end
+          end)
+          return true
+        end,
+      })
+      :find()
+  end
+
+  -- First level: one entry per tool (perf, asm, valgrind, ...).
+  function M._open_tools()
+    pickers
+      .new(themes.get_dropdown { layout_config = { width = width_for(M._group_order), height = 0.6 } }, {
+        prompt_title = "Overseer: tools",
+        finder = finders.new_table { results = M._group_order },
+        sorter = conf.generic_sorter {},
+        attach_mappings = function(prompt_bufnr)
+          actions.select_default:replace(function()
+            local entry = action_state.get_selected_entry()
+            actions.close(prompt_bufnr)
+            if not entry then
+              return
+            end
+            open_actions(entry[1])
+          end)
+          return true
+        end,
+      })
+      :find()
+  end
+
+  M._open_tools()
 end
 
 return M

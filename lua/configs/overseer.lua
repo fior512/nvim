@@ -466,12 +466,37 @@ end
 -- still point into any transitively-included header, including fully
 -- external ones like /usr/include/ROOT/*.hxx. That's just noise for a
 -- single-file check: keeps every warning/error, drops a note only when its
--- own location isn't this file.
+-- own location isn't this file. Colors afterward, by hand, on the plain
+-- (--use-color-less) output: clang-tidy's own --use-color puts ANSI codes
+-- between "file:line:col: " and "warning:"/"note:", which breaks the exact
+-- plain-text match this filter depends on - so color has to be added here,
+-- after filtering, not requested from clang-tidy itself.
 local function tidy_note_filter(target_efile)
   return "awk -v target="
     .. target_efile
-    .. " 'BEGIN{keep=1} { if (match($0, /:[0-9]+:[0-9]+: (error|warning|note):/)) "
-    .. "{ file=substr($0,1,RSTART-1); keep = !($0 ~ /: note:/ && file != target) } if (keep) print }'"
+    .. [==[ '
+BEGIN {
+  keep = 1
+  ESC = sprintf("%c", 27)
+  BOLD = ESC "[1m"; RED = ESC "[1;31m"; MAG = ESC "[1;35m"; CYAN = ESC "[1;36m"; GRN = ESC "[1;32m"; RST = ESC "[0m"
+}
+{
+  line = $0
+  if (match(line, /:[0-9]+:[0-9]+: (error|warning|note):/)) {
+    prefix = substr(line, 1, RSTART - 1)
+    tag = substr(line, RSTART, RLENGTH)
+    suffix = substr(line, RSTART + RLENGTH)
+    keep = !(tag ~ /note:/ && prefix != target)
+    if (keep) {
+      color = (tag ~ /error:/) ? RED : (tag ~ /warning:/) ? MAG : CYAN
+      line = BOLD prefix RST color tag RST suffix
+    }
+  } else if (keep && line ~ /\|.*\^/) {
+    line = GRN line RST
+  }
+  if (keep) print line
+}
+']==]
 end
 
 -- One "tidy: <category>" def. checks is a clang-tidy --checks value (comma
@@ -484,7 +509,7 @@ local function tidy_def(category, checks, desc)
     build = function(c)
       return {
         cmd = string.format(
-          "clang-tidy --checks=%s --quiet --use-color --header-filter='' %s -- %s | %s",
+          "clang-tidy --checks=%s --quiet --header-filter='' %s -- %s | %s",
           vim.fn.shellescape(checks),
           c.efile,
           STD,

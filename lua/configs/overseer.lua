@@ -453,6 +453,55 @@ for _, m in ipairs(COMPILE_MODES) do
   COMPILE_MODE_BY_NAME[m[1]] = m
 end
 
+-- clang-tidy only reports warnings/errors in the file it was asked to check
+-- (--header-filter defaults to matching nothing), but a "note:" attached to
+-- one of those warnings - e.g. an analyzer's exception-path trace - can
+-- still point into any transitively-included header, including fully
+-- external ones like /usr/include/ROOT/*.hxx. That's just noise for a
+-- single-file check: keeps every warning/error, drops a note only when its
+-- own location isn't this file.
+local function tidy_note_filter(target_efile)
+  return "awk -v target="
+    .. target_efile
+    .. " 'BEGIN{keep=1} { if (match($0, /:[0-9]+:[0-9]+: (error|warning|note):/)) "
+    .. "{ file=substr($0,1,RSTART-1); keep = !($0 ~ /: note:/ && file != target) } if (keep) print }'"
+end
+
+-- One "tidy: <category>" def. checks is a clang-tidy --checks value (comma
+-- list, "-name" entries excluded). --header-filter='': explicit, don't rely
+-- on the implicit default. -quiet: drop the "N warnings generated" banner.
+local function tidy_def(category, checks, desc)
+  return {
+    name = "tidy: " .. category,
+    desc = desc,
+    build = function(c)
+      return {
+        cmd = string.format(
+          "clang-tidy --checks=%s --quiet --use-color --header-filter='' %s -- %s | %s",
+          vim.fn.shellescape(checks),
+          c.efile,
+          STD,
+          tidy_note_filter(c.efile)
+        ),
+      }
+    end,
+  }
+end
+
+-- One "cppcheck: <category>" def. enable is a cppcheck --enable value.
+local function cppcheck_def(category, enable, desc)
+  return {
+    name = "cppcheck: " .. category,
+    desc = desc,
+    condition_callback = function()
+      return vim.fn.executable "cppcheck" == 1
+    end,
+    build = function(c)
+      return { cmd = string.format("cppcheck --enable=%s --std=c++20 --language=c++ %s", enable, c.efile) }
+    end,
+  }
+end
+
 -- Each def: { name, desc?, tags?, quickfix?, needs_bin?, condition_callback?,
 --             params?, build = fn(ctx, params) -> task }
 -- build() returns a task-opts table; cmd may be a list (exec directly) or a
@@ -1728,77 +1777,31 @@ local defs = {
   -- tidy: clang-tidy split into categories (standalone file, no
   -- compile_commands.json). Each is check-only (no --fix): findings are
   -- reviewed, not auto-applied, and every task below runs on this one file
-  -- only - never a project-wide/header-expanding sweep.
+  -- only - never a project-wide/header-expanding sweep. See tidy_def above
+  -- for the shared command (the --header-filter/note-filtering that keeps
+  -- output scoped to this file even when it includes outside headers).
   -----------------------------------------------------------------------------
-  {
-    -- UB/lifetime/bug-prone patterns: static analyzer, bugprone-*, plus the
-    -- CERT and Core Guidelines alias groups (mostly re-point at bugprone/
-    -- cppcoreguidelines checks already covered elsewhere, so overlap with
-    -- the other tidy categories is expected).
-    name = "tidy: safety",
-    desc = "clang-analyzer-*, bugprone-*, cert-*, cppcoreguidelines-*",
-    build = function(c)
-      local checks = "clang-analyzer-*,bugprone-*,cert-*,cppcoreguidelines-*,-bugprone-easily-swappable-parameters"
-      return { cmd = { "clang-tidy", "--checks=" .. checks, c.file, "--", STD } }
-    end,
-  },
-  {
-    name = "tidy: performance",
-    desc = "performance-*",
-    build = function(c)
-      return { cmd = { "clang-tidy", "--checks=performance-*,-performance-avoid-endl", c.file, "--", STD } }
-    end,
-  },
-  {
-    name = "tidy: readability",
-    desc = "readability-*",
-    build = function(c)
-      return { cmd = { "clang-tidy", "--checks=readability-*", c.file, "--", STD } }
-    end,
-  },
-  {
-    name = "tidy: modernize",
-    desc = "modernize-*",
-    build = function(c)
-      return { cmd = { "clang-tidy", "--checks=modernize-*", c.file, "--", STD } }
-    end,
-  },
+  -- UB/lifetime/bug-prone patterns: static analyzer, bugprone-*, plus the
+  -- CERT and Core Guidelines alias groups (mostly re-point at bugprone/
+  -- cppcoreguidelines checks already covered elsewhere, so overlap with
+  -- the other tidy categories is expected).
+  tidy_def(
+    "safety",
+    "clang-analyzer-*,bugprone-*,cert-*,cppcoreguidelines-*,-bugprone-easily-swappable-parameters",
+    "clang-analyzer-*, bugprone-*, cert-*, cppcoreguidelines-*"
+  ),
+  tidy_def("performance", "performance-*,-performance-avoid-endl", "performance-*"),
+  tidy_def("readability", "readability-*", "readability-*"),
+  tidy_def("modernize", "modernize-*", "modernize-*"),
 
   -----------------------------------------------------------------------------
   -- cppcheck: different static-analysis heuristics than clang-tidy (array
   -- bounds, uninitialized use, portability) - worth running both. Same
   -- category split and single-file scope as the tidy group above.
   -----------------------------------------------------------------------------
-  {
-    name = "cppcheck: safety",
-    desc = "--enable=warning,portability (UB, likely bugs, non-portable constructs)",
-    condition_callback = function()
-      return vim.fn.executable "cppcheck" == 1
-    end,
-    build = function(c)
-      return { cmd = { "cppcheck", "--enable=warning,portability", "--std=c++20", "--language=c++", c.file } }
-    end,
-  },
-  {
-    name = "cppcheck: performance",
-    desc = "--enable=performance",
-    condition_callback = function()
-      return vim.fn.executable "cppcheck" == 1
-    end,
-    build = function(c)
-      return { cmd = { "cppcheck", "--enable=performance", "--std=c++20", "--language=c++", c.file } }
-    end,
-  },
-  {
-    name = "cppcheck: style",
-    desc = "--enable=style",
-    condition_callback = function()
-      return vim.fn.executable "cppcheck" == 1
-    end,
-    build = function(c)
-      return { cmd = { "cppcheck", "--enable=style", "--std=c++20", "--language=c++", c.file } }
-    end,
-  },
+  cppcheck_def("safety", "warning,portability", "--enable=warning,portability (UB, likely bugs, non-portable constructs)"),
+  cppcheck_def("performance", "performance", "--enable=performance"),
+  cppcheck_def("style", "style", "--enable=style"),
 
   -----------------------------------------------------------------------------
   -- lint: other single-purpose C++ static-analysis/lint tools, each its own

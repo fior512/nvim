@@ -1880,7 +1880,7 @@ local defs = {
   {
     -- Reports headers this TU actually uses vs. what it #includes; needs a
     -- compile command, standalone -std flag is enough for a single TU.
-    name = "lint: include-what-you-use",
+    name = "lint: iwyu",
     desc = "Over-/under-included headers for this TU (iwyu)",
     condition_callback = function()
       return vim.fn.executable "include-what-you-use" == 1 or vim.fn.executable "iwyu" == 1
@@ -1888,6 +1888,38 @@ local defs = {
     build = function(c)
       local tool = pick { "include-what-you-use", "iwyu" }
       return { cmd = { tool, "-std=c++20", c.file } }
+    end,
+  },
+  {
+    -- The include-fixer script ships alongside iwyu, named fix_includes.py
+    -- upstream but packaged as iwyu-fix-includes on Arch/EndeavourOS; pick()
+    -- covers both. It parses iwyu's own diagnostic text (printed on stderr,
+    -- hence 2>&1) to rewrite the file's #includes in place. --nocomments
+    -- is already its default (no "why" comment after each added #include);
+    -- passed explicitly since that's the point of this task, not an
+    -- incidental default. Same std flag as the report-only task above so
+    -- its analysis matches. The buffer isn't reloaded automatically
+    -- (overseer can't reach back into the editing session), so the echo
+    -- afterward is a reminder, not a no-op.
+    name = "lint: iwyu auto-apply",
+    desc = "Runs iwyu, then rewrites this file's #includes on disk (no why-comments)",
+    condition_callback = function()
+      return (vim.fn.executable "include-what-you-use" == 1 or vim.fn.executable "iwyu" == 1)
+        and (vim.fn.executable "fix_includes.py" == 1 or vim.fn.executable "iwyu-fix-includes" == 1)
+    end,
+    build = function(c)
+      local tool = pick { "include-what-you-use", "iwyu" }
+      local fixer = pick { "fix_includes.py", "iwyu-fix-includes" }
+      return {
+        cmd = string.format(
+          "%s -std=c++20 %s 2>&1 | %s --nocomments %s; "
+            .. "echo; echo 'includes rewritten on disk -- run :checktime (or :e!) to reload the buffer'",
+          tool,
+          c.efile,
+          fixer,
+          c.efile
+        ),
+      }
     end,
   },
   {

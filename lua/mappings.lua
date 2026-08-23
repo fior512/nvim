@@ -82,6 +82,13 @@ map("n", "<leader>uh", function()
   vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled())
 end, { desc = "Toggle inlay hints (auto type hints)" })
 
+-- Shows the folded value of constant integer expressions (e.g. `512 /
+-- (8*5)` -> 12) as virtual text, so integer truncation is visible while
+-- typing. On by default in c/cpp buffers (after/ftplugin); toggle here.
+map("n", "<leader>uc", function()
+  require("utils.const_fold").toggle(0)
+end, { desc = "Toggle constant-expression fold hints" })
+
 -- ctags: (re)build the project-wide `tags` index asynchronously. This file is
 -- what powers cross-file function suggestions in nvim-cmp (cmp-nvim-tags).
 -- Tip: add `tags` to your project's .gitignore.

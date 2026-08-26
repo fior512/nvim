@@ -14,6 +14,10 @@ M._names = {} -- template names, populated by M.setup(), consumed by the picker
 -- name -> ordered list of { key, label, completion?, default? } prompts,
 -- consumed by the chained vim.ui.input flow in the telescope picker below.
 M._prompts = {}
+-- name -> { key, title, choices = fn-or-list } for templates that get a
+-- third telescope level: an enum param picked in a picker instead of via
+-- vim.ui.input. Only likwid-perfctr registers one today.
+M._enum_picks = {}
 -- Every def.name is "Group: action" (e.g. "perf: stat"); the two-level
 -- telescope picker groups by the part before ": " so the top-level list
 -- shows one entry per tool instead of every action flattened together.
@@ -252,6 +256,53 @@ local function likwid_default_core_range()
     return "0"
   end
   return "0-" .. (n - 2)
+end
+
+-- likwid-perfctr -a prints a tab-aligned "name<tab>description" table; read
+-- it live so the group list always matches the installed likwid. The old
+-- hardcoded list drifted from 5.x reality (MEM_DP/CACHES no longer exist:
+-- memory groups are MEM/MEMREAD/MEMWRITE now). Feeds both the enum schema
+-- and the Level-3 group picker.
+--
+-- likwid prints its table in a fixed, unsorted order (L2 and L2CACHE end up
+-- far apart), so sort the groups by meaning: roofline/ECM ingredients first
+-- (memory bandwidth, FLOP/s), then cache/TLB, pipeline ratios, interconnect,
+-- power. Groups a newer likwid adds that aren't in GROUP_ORDER fall back to
+-- alphabetical at the end instead of breaking.
+local GROUP_ORDER = {}
+for i, name in ipairs {
+  "MEM", "MEMREAD", "MEMWRITE", -- main memory bandwidth (roofline)
+  "FLOPS_DP", "FLOPS_SP", -- FLOP/s (roofline)
+  "L2", "L2CACHE", "L3", "L3CACHE", "CACHE", "ICACHE", -- cache bandwidth + miss rates
+  "TLB", -- TLB miss rate/ratio
+  "CLOCK", "CPI", "DATA", "BRANCH", "DIVIDE", -- cycles/ratio/exec ports
+  "NUMA", -- socket interconnect
+  "ENERGY", -- power and energy
+} do
+  GROUP_ORDER[name] = i
+end
+
+local function likwid_groups()
+  if vim.fn.executable "likwid-perfctr" == 0 then
+    return {}
+  end
+  local groups = {}
+  for _, line in ipairs(vim.fn.systemlist { "likwid-perfctr", "-a" }) do
+    local value, desc = line:match("^%s*(%S+)%s*\t%s*(.-)%s*$")
+    if value and value ~= "Group" and desc then
+      groups[#groups + 1] = { value = value, desc = desc }
+    end
+  end
+  table.sort(groups, function(a, b)
+    local ra, rb = GROUP_ORDER[a.value], GROUP_ORDER[b.value]
+    ra = ra or math.huge
+    rb = rb or math.huge
+    if ra ~= rb then
+      return ra < rb
+    end
+    return a.value < b.value
+  end)
+  return groups
 end
 
 -- watchcub (github.com/fior512/bash) puts the box into a known state for
@@ -1466,8 +1517,9 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- likwid: HPC-standard grouped hardware counters (MEM_DP = roofline/ECM
-  -- ingredients; the ECM model itself is a hand-applied analytical formula).
+  -- likwid: HPC-standard grouped hardware counters (MEM/MEMREAD/MEMWRITE +
+  -- FLOPS_DP = roofline/ECM ingredients; the ECM model itself is a
+  -- hand-applied analytical formula).
   -----------------------------------------------------------------------------
   {
     -- Pass a core RANGE, not one core: likwid-perfctr then runs/measures on
@@ -1482,13 +1534,29 @@ local defs = {
     end,
     needs_bin = true,
     takes_args = true,
-    params = {
-      group = {
-        type = "enum",
-        name = "group",
-        choices = { "NUMA", "MEMWRITE", MEM_DP", "L2CACHE", "L3CACHE", "FLOPS_DP", "FLOPS_SP", "CACHES", "ENERGY" },
-        default = "MEM_DP",
-      },
+    -- group's choices come from `likwid-perfctr -a` at build time (same
+    -- pattern as likwid: bench reading its kernel list), so they always
+    -- match the installed likwid instead of a frozen list.
+    params = function()
+      local choices = {}
+      for _, g in ipairs(likwid_groups()) do
+        choices[#choices + 1] = g.value
+      end
+      return {
+        group = {
+          type = "enum",
+          name = "group",
+          choices = choices,
+          default = choices[1],
+        },
+      }
+    end,
+    -- Third telescope level for this template: pick the -g group in a
+    -- picker (name + description) before the binary/args/cores input chain.
+    enum_pick = {
+      key = "group",
+      title = "Overseer: likwid-perfctr - group",
+      choices = likwid_groups,
     },
     prompts = {
       { key = "core", label = "Cores to pin (-C, e.g. 0-10 or 0,2,4): ", default = likwid_default_core_range },
@@ -2003,10 +2071,18 @@ function M.setup()
     -- may not be open.
     local params = def.params or {}
     if def.needs_bin then
+      -- def.params may be a table or a function (likwid: perfctr reads its
+      -- group choices from `likwid-perfctr -a`); eval it either way, then
+      -- tack on the auto bin/args params.
+      local base = def.params
       params = function()
         local schema = {}
-        for k, v in pairs(def.params or {}) do
-          schema[k] = v
+        if type(base) == "function" then
+          schema = base() or {}
+        else
+          for k, v in pairs(base or {}) do
+            schema[k] = v
+          end
         end
         schema.bin = {
           type = "string",
@@ -2084,6 +2160,13 @@ function M.setup()
       end
       local group_list = M._by_group[group]
       group_list[#group_list + 1] = { name = def.name, action = action }
+
+      -- Templates with an enum_pick get the third telescope level (see
+      -- open_enum_pick in telescope_run): the choice is passed as a preset
+      -- param, so it never goes through the vim.ui.input chain below.
+      if def.enum_pick then
+        M._enum_picks[def.name] = def.enum_pick
+      end
 
       -- needs_bin/takes_args auto-generate their prompts (binary path with
       -- file completion, then optional args); any def can also declare its
@@ -2167,21 +2250,74 @@ function M.telescope_run()
     return math.min(longest + 30, math.floor(vim.o.columns * 0.75))
   end
 
-  local function run_selected(name)
+  -- run_selected(name[, preset]): preset pre-fills params chosen in a
+  -- higher telescope level (e.g. likwid-perfctr's group), skipping the
+  -- vim.ui.input chain for them.
+  local function run_selected(name, preset)
     if vim.api.nvim_buf_is_valid(src_buf) then
       vim.api.nvim_set_current_buf(src_buf)
     end
     local prompts = M._prompts[name]
     if prompts then
-      chain_prompts(overseer, name, prompts, 1, {})
+      chain_prompts(overseer, name, prompts, 1, preset or {})
     else
-      overseer.run_task { name = name }
+      overseer.run_task { name = name, params = preset or {} }
     end
+  end
+
+  local open_actions -- forward decl: open_enum_pick's <BS> handler reopens it
+
+  -- Third level (optional, per-template): pick one enum param in a picker
+  -- instead of vim.ui.input. Only likwid-perfctr registers one today (its
+  -- -g group, via def.enum_pick), but the machinery is generic. <BS> on an
+  -- empty prompt backs out to the action list, like action -> tool above.
+  local function open_enum_pick(name, enum, group)
+    local choices = type(enum.choices) == "function" and enum.choices() or enum.choices
+    if not choices or #choices == 0 then
+      -- No list available (likwid-perfctr missing or empty -a): skip the
+      -- picker; overseer's own schema default fills the param.
+      run_selected(name)
+      return
+    end
+    local labels = {}
+    local by_label = {}
+    for _, c in ipairs(choices) do
+      local label = (c.desc and c.desc ~= "") and (c.value .. ": " .. c.desc) or c.value
+      labels[#labels + 1] = label
+      by_label[label] = c.value
+    end
+
+    pickers
+      .new(themes.get_dropdown { layout_config = { width = width_for(labels), height = 0.6 } }, {
+        prompt_title = enum.title,
+        finder = finders.new_table { results = labels },
+        sorter = conf.generic_sorter {},
+        attach_mappings = function(prompt_bufnr, map)
+          actions.select_default:replace(function()
+            local entry = action_state.get_selected_entry()
+            actions.close(prompt_bufnr)
+            if not entry then
+              return
+            end
+            run_selected(name, { [enum.key] = by_label[entry[1]] })
+          end)
+          map({ "i", "n" }, "<bs>", function()
+            if action_state.get_current_line() == "" then
+              actions.close(prompt_bufnr)
+              open_actions(group)
+            else
+              vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<bs>", true, false, true), "n", true)
+            end
+          end)
+          return true
+        end,
+      })
+      :find()
   end
 
   -- Second level: scrollable list of actions for one tool. <BS> on an
   -- empty prompt backs out to the tool list instead of closing outright.
-  local function open_actions(group)
+  open_actions = function(group)
     local entries = M._by_group[group]
     local labels = {}
     for _, e in ipairs(entries) do
@@ -2204,7 +2340,13 @@ function M.telescope_run()
             if not entry then
               return
             end
-            run_selected(by_label[entry[1]])
+            local name = by_label[entry[1]]
+            local enum = M._enum_picks[name]
+            if enum then
+              open_enum_pick(name, enum, group)
+            else
+              run_selected(name)
+            end
           end)
           map({ "i", "n" }, "<bs>", function()
             if action_state.get_current_line() == "" then

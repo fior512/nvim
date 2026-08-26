@@ -1486,7 +1486,7 @@ local defs = {
       group = {
         type = "enum",
         name = "group",
-        choices = { "MEM_DP", "L2CACHE", "L3CACHE", "FLOPS_DP", "FLOPS_SP", "CACHES", "ENERGY" },
+        choices = { "NUMA", "MEMWRITE", MEM_DP", "L2CACHE", "L3CACHE", "FLOPS_DP", "FLOPS_SP", "CACHES", "ENERGY" },
         default = "MEM_DP",
       },
     },

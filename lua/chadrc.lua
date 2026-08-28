@@ -24,14 +24,28 @@
     ["@constructor"] = { fg = "#b5a494" },
     ["@keyword.type"] = { fg = "#b5a494" },
 
+    -- clangd (and other LSPs) highlight via semantic tokens, a separate
+    -- layer from treesitter captures. Neovim has no built-in integration for
+    -- most @lsp.type.* groups here (base46's semantic_tokens integration
+    -- isn't enabled), so they fall back to Neovim's own default links:
+    -- @lsp.type.class/struct/enum/interface -> @type, @lsp.type.namespace ->
+    -- @module, @lsp.type.string -> @string, @lsp.type.number -> @number,
+    -- @lsp.type.enumMember -> @constant. Overriding @lsp.type.* directly here
+    -- does nothing (base46 only patches keys an enabled integration already
+    -- defines) -- fix the underlying groups instead.
     Function             = { fg = "#a39db5" },
     ["@function"]         = { fg = "#a39db5" },
     ["@function.call"]    = { fg = "#a39db5" },
     ["@function.method"]  = { fg = "#a39db5" },
     ["@function.method.call"] = { fg = "#a39db5" },
 
-    String           = { fg = "#b6a585" },
-    ["@string"]      = { fg = "#b6a585" },
+    String           = { fg = "#bf8570" },
+    ["@string"]      = { fg = "#bf8570" },
+
+    Number           = { fg = "#b193aa" },
+    ["@number"]      = { fg = "#b193aa" },
+    Constant         = { fg = "#b193aa" },
+    ["@constant"]    = { fg = "#b193aa" },
 
     Comment          = { fg = "#4c4b3c", italic = true },
     ["@comment"]     = { fg = "#4c4b3c", italic = true },

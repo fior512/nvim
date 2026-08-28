@@ -33,8 +33,8 @@
     String           = { fg = "#b6a585" },
     ["@string"]      = { fg = "#b6a585" },
 
-    Comment          = { fg = "#555333", italic = true },
-    ["@comment"]     = { fg = "#555333", italic = true },
+    Comment          = { fg = "#4c4b3c", italic = true },
+    ["@comment"]     = { fg = "#4c4b3c", italic = true },
 
     Identifier             = { fg = "#cdcdcd" },
     ["@variable"]          = { fg = "#cdcdcd" },

@@ -94,14 +94,13 @@ end, { desc = "Toggle constant-expression fold hints" })
 -- Tip: add `tags` to your project's .gitignore.
 map("n", "<leader>ct", function()
   local cwd = vim.fn.getcwd()
-  vim.fn.jobstart("ctags -R .", {
-    cwd = cwd,
-    on_exit = function(_, code)
-      local ok = code == 0
+  vim.system({ "ctags", "-R", "." }, { cwd = cwd }, function(obj)
+    local ok = obj.code == 0
+    vim.schedule(function()
       vim.notify(
         "ctags: index " .. (ok and "refreshed" or "FAILED") .. " in " .. cwd,
         ok and vim.log.levels.INFO or vim.log.levels.ERROR
       )
-    end,
-  })
+    end)
+  end)
 end, { desc = "Regenerate ctags index (project-wide)" })

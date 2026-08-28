@@ -14,18 +14,76 @@ return {
   },
 
   -- Cross-file function suggestions: merges into NvChad's nvim-cmp spec.
-  -- lazy.nvim hands us NvChad's opts table, so we only append the new source.
   -- Requires universal-ctags + a `tags` file in the project root
   -- (generate with `ctags -R .` or <leader>ct).
+  --
+  -- `tags` and `buffer` do plain fuzzy TEXT matching (any word from ctags /
+  -- open buffers), with no idea what scope/type you're in. Left ungrouped
+  -- with nvim_lsp, their hits rank in the same merged list as clangd's
+  -- semantic completions -- that's the "suggests random words" symptom.
+  -- Fix: two groups. Group 1 (lsp+snippets) is tried first; group 2
+  -- (buffer+tags) only kicks in when group 1 returns nothing.
   {
     "hrsh7th/nvim-cmp",
     dependencies = {
       "quangnguyen30192/cmp-nvim-tags",
     },
     opts = function(_, opts)
-      opts.sources = vim.list_extend(opts.sources, {
-        { name = "tags" }, -- functions/defs from ALL files in the directory
+      local cmp = require "cmp"
+      opts.sources = cmp.config.sources({
+        { name = "nvim_lsp" },
+        { name = "luasnip" },
+        { name = "nvim_lua" },
+        { name = "async_path" },
+      }, {
+        { name = "buffer" },
+        { name = "tags" },
       })
+
+      -- NvChad's default <Tab> steals the key the moment the menu is merely
+      -- VISIBLE (cmp.visible()), not when you've actually picked an item --
+      -- so moving the cursor away and hitting Tab to indent selects/confirms
+      -- a stale suggestion instead.
+      --
+      -- Wanted behavior: Enter accepts, arrows navigate, Tab dismisses the
+      -- menu (first press) and only then falls through to a real tab/snippet
+      -- jump (second press, menu already closed).
+      opts.mapping["<Tab>"] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          cmp.abort()
+        elseif require("luasnip").expand_or_jumpable() then
+          require("luasnip").expand_or_jump()
+        else
+          fallback()
+        end
+      end, { "i", "s" })
+
+      opts.mapping["<S-Tab>"] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          cmp.abort()
+        elseif require("luasnip").jumpable(-1) then
+          require("luasnip").jump(-1)
+        else
+          fallback()
+        end
+      end, { "i", "s" })
+
+      opts.mapping["<Up>"] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          cmp.select_prev_item()
+        else
+          fallback()
+        end
+      end, { "i" })
+
+      opts.mapping["<Down>"] = cmp.mapping(function(fallback)
+        if cmp.visible() then
+          cmp.select_next_item()
+        else
+          fallback()
+        end
+      end, { "i" })
+
       return opts
     end,
   },

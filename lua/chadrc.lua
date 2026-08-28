@@ -41,10 +41,10 @@
     ["@variable.parameter"] = { fg = "#cdcdcd" },
     ["@property"]          = { fg = "#cdcdcd" },
 
-    Delimiter                  = { fg = "#4c4c4a" },
-    ["@punctuation.delimiter"] = { fg = "#4c4c4a" },
-    ["@punctuation.bracket"]   = { fg = "#4c4c4a" },
-    Operator                  = { fg = "#4c4c4a" },
+    Delimiter                  = { fg = "#7a7873" },
+    ["@punctuation.delimiter"] = { fg = "#7a7873" },
+    ["@punctuation.bracket"]   = { fg = "#7a7873" },
+    Operator                  = { fg = "#7a7873" },
     LspInlayHint = { fg = "#3a3833", bg = "NONE", italic = true },
 
     -- zenbones_custom has no Telescope colors of its own: selection/border

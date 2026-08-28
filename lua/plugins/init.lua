@@ -1,5 +1,19 @@
 return {
   {
+    "gen740/SmoothCursor.nvim",
+    event = "VeryLazy",
+    opts = {
+      type = "default", -- interpolated block movement, no trailing glyphs
+      fancy = { enable = false }, -- no rainbow trail, matches minimalist palette
+      cursor_color = "#d0918d", -- existing accent (Keyword/red)
+      intervals = 35,
+      flyin_effect = nil,
+      speed = 25,
+      autostart = true,
+      disable_float_win = true,
+    },
+  },
+  {
     "stevearc/conform.nvim",
     -- event = 'BufWritePre', -- uncomment for format on save
     opts = require "configs.conform",

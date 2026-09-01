@@ -526,6 +526,26 @@ local function cppcheck_def(category, enable, desc)
   }
 end
 
+-- rustc's diagnostic format ("error[E0308]: mismatched types" then a
+-- separate " --> src/main.rs:3:5" line) doesn't match vim's gcc-oriented
+-- default 'errorformat', so on_output_quickfix would silently populate
+-- nothing -- this is rust.vim's own cargo compiler errorformat instead.
+local CARGO_EFM = table.concat({
+  [[%-GCompiling\ %.%#]],
+  [[%-GFinished\ %.%#]],
+  [[%-GRunning\ %.%#]],
+  [[%-Gerror:\ aborting\ %.%#]],
+  [[%Eerror:\ %m]],
+  [[%Eerror[E%n]:\ %m]],
+  [[%Wwarning:\ %m]],
+  [[%Inote:\ %m]],
+  [[%C\ %#-->\ %f:%l:%c]],
+  [[%Z%.%#]],
+}, ",")
+local function cargo_quickfix()
+  return { { "on_output_quickfix", open_on_error = true, errorformat = CARGO_EFM }, "default" }
+end
+
 -- Each def: { name, desc?, tags?, quickfix?, needs_bin?, condition_callback?,
 --             params?, build = fn(ctx, params) -> task }
 -- build() returns a task-opts table; cmd may be a list (exec directly) or a
@@ -1399,18 +1419,28 @@ local defs = {
     params = TYPE_PARAM,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
+      -- pahole spams stderr with harmless DWARF-parser noise on template-heavy
+      -- C++ binaries (unhandled template value-params, missing abstract_origin
+      -- for inlined formal_parameters) - neither affects the layout it reports,
+      -- so filter both out for readability instead of scrolling past them.
+      local function quiet(cmd)
+        return string.format(
+          "(%s) 2>&1 | grep -Ev 'not handled in a c\\+\\+[0-9]+ CU!|abstract_origin for .* \\(formal_parameter\\)!'",
+          cmd
+        )
+      end
       -- -F dwarf: recent pahole tries BTF first and can misreport types on
       -- a mixed-info ELF. Still needs the binary built with -g.
       if p.type_name and p.type_name ~= "" then
         local t = vim.fn.shellescape(p.type_name)
         return {
-          cmd = string.format(
+          cmd = quiet(string.format(
             "pahole -F dwarf -C %s %s && echo '--- reorganized ---' && pahole -F dwarf -C %s --reorganize %s",
             t, ebin, t, ebin
-          ),
+          )),
         }
       end
-      return { cmd = string.format("pahole -F dwarf --hole_size_ge=8 %s", ebin) }
+      return { cmd = quiet(string.format("pahole -F dwarf --hole_size_ge=8 %s", ebin)) }
     end,
   },
 
@@ -2027,6 +2057,132 @@ local defs = {
     name = "rr: replay",
     build = function()
       return { cmd = { "rr", "replay" } }
+    end,
+  },
+
+  -----------------------------------------------------------------------------
+  -- Cargo (Rust): no_buffer, not tied to the current file, since cargo
+  -- commands operate on the whole project from its root (cwd) regardless of
+  -- which .rs file is open. Always shown once `cargo` is on PATH -- not
+  -- gated on a Cargo.toml at cwd, since cwd may be a subdirectory of the
+  -- project (cargo itself walks up to find the manifest, same as this
+  -- picker should). rustaceanvim/rust-analyzer handle LSP diagnostics and
+  -- formatting separately; these are just the build/run/test loop.
+  -----------------------------------------------------------------------------
+  {
+    name = "Cargo: build",
+    tags = { "BUILD" },
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    build = function()
+      return { cmd = { "cargo", "build" }, components = cargo_quickfix() }
+    end,
+  },
+  {
+    name = "Cargo: build (release)",
+    tags = { "BUILD" },
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    build = function()
+      return { cmd = { "cargo", "build", "--release" }, components = cargo_quickfix() }
+    end,
+  },
+  {
+    name = "Cargo: run",
+    tags = { "RUN" },
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    params = {
+      args = { type = "string", name = "args", desc = "arguments passed to the binary (blank = none)", optional = true },
+    },
+    prompts = { { key = "args", label = "Args (blank = none): ", required = false } },
+    build = function(_, p)
+      local args = (p.args and p.args ~= "") and (" -- " .. p.args) or ""
+      return { cmd = "cargo run" .. args }
+    end,
+  },
+  {
+    name = "Cargo: run (release)",
+    tags = { "RUN" },
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    params = {
+      args = { type = "string", name = "args", desc = "arguments passed to the binary (blank = none)", optional = true },
+    },
+    prompts = { { key = "args", label = "Args (blank = none): ", required = false } },
+    build = function(_, p)
+      local args = (p.args and p.args ~= "") and (" -- " .. p.args) or ""
+      return { cmd = "cargo run --release" .. args }
+    end,
+  },
+  {
+    name = "Cargo: test",
+    tags = { "TEST" },
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    params = {
+      filter = { type = "string", name = "filter", desc = "test name filter (blank = all)", optional = true },
+    },
+    prompts = { { key = "filter", label = "Test filter (blank = all): ", required = false } },
+    build = function(_, p)
+      local filter = (p.filter and p.filter ~= "") and (" " .. p.filter) or ""
+      -- quickfix only catches compile errors (rustc's "-->" format); test
+      -- panics print a different shape ("thread 'x' panicked at ..."), so
+      -- there's no matching quickfix entry for those, only for a build failure.
+      return { cmd = "cargo test" .. filter, components = cargo_quickfix() }
+    end,
+  },
+  {
+    name = "Cargo: check",
+    desc = "Fast type-check without codegen",
+    tags = { "BUILD" },
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    build = function()
+      return { cmd = { "cargo", "check" }, components = cargo_quickfix() }
+    end,
+  },
+  {
+    name = "Cargo: clippy",
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    build = function()
+      return { cmd = { "cargo", "clippy", "--all-targets", "--all-features" }, components = cargo_quickfix() }
+    end,
+  },
+  {
+    name = "Cargo: bench",
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    build = function()
+      return { cmd = { "cargo", "bench" } }
+    end,
+  },
+  {
+    name = "Cargo: doc",
+    desc = "Builds docs and opens them in the default browser",
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "cargo" == 1
+    end,
+    build = function()
+      return { cmd = { "cargo", "doc", "--open", "--no-deps" } }
     end,
   },
 }

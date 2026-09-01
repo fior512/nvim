@@ -1,5 +1,88 @@
 return {
   {
+    "scottmckendry/cyberdream.nvim",
+    lazy = false,
+    priority = 1000, -- load before other UI plugins reference highlight groups
+    config = function()
+      require("cyberdream").setup {
+        colors = {
+          -- darker bg to match the hardcoded zenbones_custom theme instead
+          -- of cyberdream's default #16181a
+          bg = "#040403",
+          bg_alt = "#0a0908",
+          bg_highlight = "#161412",
+          -- pure #ffffff was too bright against the dark bg
+          fg = "#dcdcd4",
+          -- no pink/purple anywhere: purple/magenta go to the actual
+          -- zenbones_custom green (#b5a494, the same "green" your hardcoded
+          -- nvim theme already renders -- not hypr's window-border accent,
+          -- that's a different, unrelated color); pink goes soft-gold
+          purple = "#b5a494",
+          magenta = "#b5a494",
+          pink = "#ecd3a0",
+          -- cyan was the last teal-family color left (it's what Boolean,
+          -- PreProc, search-highlight etc. actually pull from) -- retire it
+          -- to the same soft-gold instead of patching each group piecemeal
+          cyan = "#ecd3a0",
+        },
+        highlights = {
+          -- Rust's own brand orange for strings, darkened a touch so it
+          -- doesn't read as bright against the dark bg
+          String = { fg = "#bd8c70" },
+          Character = { fg = "#bd8c70" },
+          -- hardcoded/literal values (numbers, consts) match strings now
+          -- instead of the soft-gold they inherited from `pink`
+          Constant = { fg = "#bd8c70" },
+          Number = { fg = "#bd8c70" },
+          -- println!/macros: was landing on a rusty tone via Macro->PreProc;
+          -- pin it to the soft-gold accent instead, explicitly, on every
+          -- path that can resolve a macro (plain syntax, treesitter,
+          -- rust-analyzer semantic tokens)
+          Macro = { fg = "#ecd3a0" },
+          ["@function.macro"] = { fg = "#ecd3a0" },
+          ["@lsp.type.macro"] = { fg = "#ecd3a0" },
+          -- for/in/while/loop/match/else etc. fall back to Statement by
+          -- default (would've picked up the green from purple/magenta) --
+          -- pin them to Keyword's orange instead, same as `let`/`fn`
+          Conditional = { fg = "#ffbd5e" },
+          Repeat = { fg = "#ffbd5e" },
+          Label = { fg = "#ffbd5e" },
+          Exception = { fg = "#ffbd5e" },
+          ["@keyword.conditional"] = { fg = "#ffbd5e" },
+          ["@keyword.repeat"] = { fg = "#ffbd5e" },
+          ["@keyword.exception"] = { fg = "#ffbd5e" },
+          ["@label"] = { fg = "#ffbd5e" },
+
+          -- dimmed, not eye-catching, but still legible against #040403
+          Comment = { fg = "#4c4b3c", italic = true },
+          ["@comment"] = { fg = "#4c4b3c", italic = true },
+          -- doc comments (///, //!, /** */) a touch brighter than plain //
+          -- comments, but only slightly -- not a hard contrast jump
+          SpecialComment = { fg = "#5c5a46", italic = true },
+          ["@comment.documentation"] = { fg = "#5c5a46", italic = true },
+
+          -- inline "cues" (inlay hints, virtual diagnostics) as dark/muted
+          -- as the hardcoded zenbones_custom theme's -- signs/underlines on
+          -- actual errors stay full-strength (untouched) so real problems
+          -- still stand out
+          LspInlayHint = { fg = "#3a3833", italic = true },
+          DiagnosticVirtualTextError = { fg = "#604341", italic = true },
+          DiagnosticVirtualTextWarn = { fg = "#544c3e", italic = true },
+          DiagnosticVirtualTextInfo = { fg = "#544c44", italic = true },
+          DiagnosticVirtualTextHint = { fg = "#4c4953", italic = true },
+        },
+      }
+      -- init.lua re-applies NvChad's base46 "defaults"/"statusline" cache
+      -- *after* lazy.setup() returns, which would stomp these highlights
+      -- if set synchronously here -- defer to the next event loop tick so
+      -- this runs last and is the startup default. <leader>tc (mappings.lua)
+      -- still flips back to the hardcoded zenbones_custom theme and back.
+      vim.schedule(function()
+        require("cyberdream").load()
+      end)
+    end,
+  },
+  {
     "gen740/SmoothCursor.nvim",
     event = "VeryLazy",
     opts = {
@@ -158,7 +241,44 @@ return {
     event = "VeryLazy",
     opts = {
       options = {
-        theme = "auto", -- reads live from whatever colorscheme is active
+        -- theme = "auto" samples highlight groups (PmenuSel, String,
+        -- Special/Boolean, ...) once at lualine's own load time via a
+        -- require()-cached module -- racy against cyberdream's own load
+        -- (deferred with vim.schedule in this config), so it can freeze in
+        -- cyberdream's raw defaults (teal/pink) instead of our overrides.
+        -- An explicit theme built from the same palette can't drift.
+        theme = {
+          normal = {
+            a = { bg = "#ffbd5e", fg = "#040403", gui = "bold" }, -- orange (Keyword)
+            b = { bg = "#0a0908", fg = "#ffbd5e" },
+            c = { bg = "#161412", fg = "#dcdcd4" },
+          },
+          insert = {
+            a = { bg = "#b5a494", fg = "#040403", gui = "bold" }, -- green (Type)
+            b = { bg = "#0a0908", fg = "#b5a494" },
+            c = { bg = "#161412", fg = "#dcdcd4" },
+          },
+          visual = {
+            a = { bg = "#ecd3a0", fg = "#040403", gui = "bold" }, -- soft-gold
+            b = { bg = "#0a0908", fg = "#ecd3a0" },
+            c = { bg = "#161412", fg = "#dcdcd4" },
+          },
+          replace = {
+            a = { bg = "#bd8c70", fg = "#040403", gui = "bold" }, -- rust-orange (String)
+            b = { bg = "#0a0908", fg = "#bd8c70" },
+            c = { bg = "#161412", fg = "#dcdcd4" },
+          },
+          command = {
+            a = { bg = "#dcdcd4", fg = "#040403", gui = "bold" }, -- dimmed white
+            b = { bg = "#0a0908", fg = "#dcdcd4" },
+            c = { bg = "#161412", fg = "#dcdcd4" },
+          },
+          inactive = {
+            a = { bg = "#0a0908", fg = "#4c4b3c" },
+            b = { bg = "#0a0908", fg = "#4c4b3c" },
+            c = { bg = "#0a0908", fg = "#4c4b3c" },
+          },
+        },
       },
     },
   },

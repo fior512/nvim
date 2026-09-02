@@ -202,6 +202,18 @@ return {
       return opts
     end,
   },
+  -- Compiled LaTeX preview (real document layout: fonts, sections, page
+  -- geometry -- not just inline math). markview's `tex` filetype support
+  -- (configs.markview) only renders math snippets and is a no-op on a
+  -- full `\documentclass` file like a resume, so this handles that case
+  -- separately: latexmk compiles on save, vimtex opens/syncs okular.
+  {
+    "lervag/vimtex",
+    lazy = false, -- must load before the first .tex buffer opens
+    init = function()
+      require "configs.vimtex"
+    end,
+  },
   {
     'mrcjkb/rustaceanvim',
     version = '^9',
@@ -267,16 +279,48 @@ return {
     config = function()
       require("markview").setup(require "configs.markview")
 
+      -- Default MarkviewHeading1-6 are `:hi link`ed to a generated
+      -- MarkviewPaletteN group carrying a per-level colored BACKGROUND
+      -- block (that's what actually made headings look like a boxed icon,
+      -- not the icon glyph itself, which configs.markview already turned
+      -- off) -- and that link gets (re-)established every time markview
+      -- actually renders a buffer, which for this setup only ever happens
+      -- inside splitview_render(), called synchronously right after
+      -- `MarkviewSplitviewOpen` fires. Setting this before setup() or
+      -- before that render doesn't survive it, so reapply on the next
+      -- tick after each split opens instead: bold, no bg, plain
+      -- foreground, closer to how GitHub renders headings (weight, not a
+      -- colored chip).
+      local function plain_headings()
+        for i = 1, 6 do
+          vim.api.nvim_set_hl(0, "MarkviewHeading" .. i, { fg = "#dcdcd4", bold = true })
+        end
+      end
+
+      -- `MarkviewSplitviewOpen` fires before `splitview_render()` has
+      -- copied any text into the preview buffer (see actions.splitOpen in
+      -- markview's source: the autocmd fires, THEN splitview_render()
+      -- runs). Attaching snacks.image here finds an empty buffer -- no
+      -- math nodes, so nothing ever resolves past its placeholder icon.
+      -- Deferring both this and plain_headings to the next tick lets
+      -- splitview_render() finish first.
       vim.api.nvim_create_autocmd("User", {
         pattern = "MarkviewSplitviewOpen",
         group = vim.api.nvim_create_augroup("markview_snacks_math", { clear = true }),
         callback = function(ev)
-          Snacks.image.doc.attach(ev.data.preview_buffer)
+          vim.schedule(function()
+            Snacks.image.doc.attach(ev.data.preview_buffer)
+            plain_headings()
+          end)
         end,
       })
 
+      -- markdown only: markview's tex support renders inline math, not
+      -- full document layout, so it's a no-op split on a real .tex file
+      -- (resume, paper, ...) -- that case is handled by vimtex + okular
+      -- instead (configs.vimtex), which shows the actual compiled PDF.
       vim.api.nvim_create_autocmd("FileType", {
-        pattern = { "markdown", "tex" },
+        pattern = { "markdown" },
         group = vim.api.nvim_create_augroup("markview_autosplit", { clear = true }),
         callback = function(ev)
           if vim.bo[ev.buf].buftype ~= "" then

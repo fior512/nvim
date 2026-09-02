@@ -105,7 +105,8 @@ map("n", "<leader>ct", function()
   end)
 end, { desc = "Regenerate ctags index (project-wide)" })
 
--- Markdown/LaTeX visualizer: a split preview opens automatically on
--- markdown/tex filetypes (source left, rendered right, real LaTeX math via
--- snacks.image); this toggles it off/on for the current buffer.
-map("n", "<leader>mv", "<cmd>Markview splitToggle<cr>", { desc = "Toggle markdown/latex split preview" })
+-- Markdown visualizer: a split preview opens automatically on markdown
+-- buffers (source left, rendered right, real LaTeX math via snacks.image);
+-- this toggles it off/on for the current buffer. .tex buffers get their
+-- own <leader>mv (compiled PDF, not this split) -- see configs/vimtex.lua.
+map("n", "<leader>mv", "<cmd>Markview splitToggle<cr>", { desc = "Toggle markdown split preview" })

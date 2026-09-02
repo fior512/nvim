@@ -211,6 +211,13 @@ return {
     end
   },
 
+  -- Retires every teal-hued file icon devicons ships (cpp, go, jsx,
+  -- hyprland.conf, ...) to the same soft-gold that cyberdream's `cyan`
+  -- override (above) already uses -- see configs/devicons.lua for why.
+  {
+    "nvim-tree/nvim-web-devicons",
+    opts = require "configs.devicons",
+  },
   {
     "nvim-treesitter/nvim-treesitter",
     opts = {

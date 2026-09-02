@@ -223,8 +223,50 @@ return {
         "markdown", "markdown_inline",
         "typescript", "tsx",
         "cuda",
+        "latex",
       },
     },
+  },
+
+  -- Markdown/LaTeX visualizer: real split window (source left, rendered
+  -- preview right), autodetected by filetype. configs.markview turns off
+  -- markview's own inline/conceal rendering (preview.enable = false) so the
+  -- SOURCE buffer stays plain, editable text -- only markview's `splitOpen`
+  -- preview buffer gets rendered. On every markdown/tex buffer we open that
+  -- split automatically, and on `MarkviewSplitviewOpen` we attach
+  -- snacks.image (real pdflatex-compiled math, see configs.snacks) to the
+  -- preview buffer only, so math images never land in the editable side.
+  {
+    "OXY2DEV/markview.nvim",
+    lazy = false, -- already lazy-loads itself; see plugin README
+    config = function()
+      require("markview").setup(require "configs.markview")
+
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "MarkviewSplitviewOpen",
+        group = vim.api.nvim_create_augroup("markview_snacks_math", { clear = true }),
+        callback = function(ev)
+          Snacks.image.doc.attach(ev.data.preview_buffer)
+        end,
+      })
+
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = { "markdown", "tex" },
+        group = vim.api.nvim_create_augroup("markview_autosplit", { clear = true }),
+        callback = function(ev)
+          if vim.bo[ev.buf].buftype ~= "" then
+            return -- real file buffers only, skip floats/scratch/previews
+          end
+          require("markview.actions").splitOpen(ev.buf)
+        end,
+      })
+    end,
+  },
+  {
+    "folke/snacks.nvim",
+    priority = 1000,
+    lazy = false,
+    opts = require "configs.snacks",
   },
   {
     "stevearc/overseer.nvim",

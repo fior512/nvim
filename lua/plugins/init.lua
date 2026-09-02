@@ -72,6 +72,24 @@ return {
           DiagnosticVirtualTextHint = { fg = "#4c4953", italic = true },
         },
       }
+
+      -- snacks.image bakes this into the LaTeX \color{} it compiles math
+      -- with (configs/snacks.lua): it's read ONCE, the first time the
+      -- image module loads, from Special/@markup.math.latex, and the
+      -- opening the command-line file (which is what actually triggers
+      -- that first read, via the markview splitview autocmd) happens
+      -- before the vim.schedule(cyberdream.load) below ever gets to run --
+      -- so if this were left inside the `highlights` table above (applied
+      -- only once that scheduled load() fires), the teal snapshot would
+      -- already be baked into the rendered image by the time it lands.
+      -- Set it here instead: synchronously, so it exists before anything
+      -- can read it. It's safe from NvChad's later base46 cache
+      -- reapplication (the reason the rest of this config has to be
+      -- deferred in the first place) because that reapplication only
+      -- touches NvChad's own known highlight groups, never third-party
+      -- ones it has no knowledge of like this one.
+      vim.api.nvim_set_hl(0, "SnacksImageMath", { fg = "#ecd3a0" })
+
       -- init.lua re-applies NvChad's base46 "defaults"/"statusline" cache
       -- *after* lazy.setup() returns, which would stomp these highlights
       -- if set synchronously here -- defer to the next event loop tick so

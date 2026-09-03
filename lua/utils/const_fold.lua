@@ -1,7 +1,4 @@
--- Shows the compile-time value of constant integer expressions (e.g.
--- `512 / (8*5)`) as virtual text right after the expression, so integer
--- truncation/overflow surprises are visible while typing instead of only
--- at runtime.
+-- shows constant integer expr values as virtual text
 local M = {}
 
 local ns = vim.api.nvim_create_namespace "const_fold"
@@ -146,9 +143,7 @@ function M.refresh(buf)
       if not shadowed then
         local end_row, end_col = node:end_()
         vim.api.nvim_buf_set_extmark(buf, ns, end_row, end_col, {
-          -- "@lsp.type.comment" is the dimmed color autocmds.lua assigns to
-          -- inactive #if/#else branches -- reuse it so folded-constant hints
-          -- read as "compile-time known" the same way those branches do.
+          -- dimmed like inactive #if/#else branches
           virt_text = { { " = " .. tostring(value), "@lsp.type.comment" } },
           virt_text_pos = "inline",
         })

@@ -1,106 +1,5 @@
 return {
   {
-    "scottmckendry/cyberdream.nvim",
-    lazy = false,
-    priority = 1000, -- load before other UI plugins reference highlight groups
-    config = function()
-      require("cyberdream").setup {
-        colors = {
-          -- darker bg to match the hardcoded zenbones_custom theme instead
-          -- of cyberdream's default #16181a
-          bg = "#040403",
-          bg_alt = "#0a0908",
-          bg_highlight = "#161412",
-          -- pure #ffffff was too bright against the dark bg
-          fg = "#dcdcd4",
-          -- no pink/purple anywhere: purple/magenta go to the actual
-          -- zenbones_custom green (#b5a494, the same "green" your hardcoded
-          -- nvim theme already renders -- not hypr's window-border accent,
-          -- that's a different, unrelated color); pink goes soft-gold
-          purple = "#b5a494",
-          magenta = "#b5a494",
-          pink = "#ecd3a0",
-          -- cyan was the last teal-family color left (it's what Boolean,
-          -- PreProc, search-highlight etc. actually pull from) -- retire it
-          -- to the same soft-gold instead of patching each group piecemeal
-          cyan = "#ecd3a0",
-        },
-        highlights = {
-          -- Rust's own brand orange for strings, darkened a touch so it
-          -- doesn't read as bright against the dark bg
-          String = { fg = "#bd8c70" },
-          Character = { fg = "#bd8c70" },
-          -- hardcoded/literal values (numbers, consts) match strings now
-          -- instead of the soft-gold they inherited from `pink`
-          Constant = { fg = "#bd8c70" },
-          Number = { fg = "#bd8c70" },
-          -- println!/macros: was landing on a rusty tone via Macro->PreProc;
-          -- pin it to the soft-gold accent instead, explicitly, on every
-          -- path that can resolve a macro (plain syntax, treesitter,
-          -- rust-analyzer semantic tokens)
-          Macro = { fg = "#ecd3a0" },
-          ["@function.macro"] = { fg = "#ecd3a0" },
-          ["@lsp.type.macro"] = { fg = "#ecd3a0" },
-          -- for/in/while/loop/match/else etc. fall back to Statement by
-          -- default (would've picked up the green from purple/magenta) --
-          -- pin them to Keyword's orange instead, same as `let`/`fn`
-          Conditional = { fg = "#ffbd5e" },
-          Repeat = { fg = "#ffbd5e" },
-          Label = { fg = "#ffbd5e" },
-          Exception = { fg = "#ffbd5e" },
-          ["@keyword.conditional"] = { fg = "#ffbd5e" },
-          ["@keyword.repeat"] = { fg = "#ffbd5e" },
-          ["@keyword.exception"] = { fg = "#ffbd5e" },
-          ["@label"] = { fg = "#ffbd5e" },
-
-          -- dimmed, not eye-catching, but still legible against #040403
-          Comment = { fg = "#4c4b3c", italic = true },
-          ["@comment"] = { fg = "#4c4b3c", italic = true },
-          -- doc comments (///, //!, /** */) a touch brighter than plain //
-          -- comments, but only slightly -- not a hard contrast jump
-          SpecialComment = { fg = "#5c5a46", italic = true },
-          ["@comment.documentation"] = { fg = "#5c5a46", italic = true },
-
-          -- inline "cues" (inlay hints, virtual diagnostics) as dark/muted
-          -- as the hardcoded zenbones_custom theme's -- signs/underlines on
-          -- actual errors stay full-strength (untouched) so real problems
-          -- still stand out
-          LspInlayHint = { fg = "#3a3833", italic = true },
-          DiagnosticVirtualTextError = { fg = "#604341", italic = true },
-          DiagnosticVirtualTextWarn = { fg = "#544c3e", italic = true },
-          DiagnosticVirtualTextInfo = { fg = "#544c44", italic = true },
-          DiagnosticVirtualTextHint = { fg = "#4c4953", italic = true },
-        },
-      }
-
-      -- snacks.image bakes this into the LaTeX \color{} it compiles math
-      -- with (configs/snacks.lua): it's read ONCE, the first time the
-      -- image module loads, from Special/@markup.math.latex, and the
-      -- opening the command-line file (which is what actually triggers
-      -- that first read, via the markview splitview autocmd) happens
-      -- before the vim.schedule(cyberdream.load) below ever gets to run --
-      -- so if this were left inside the `highlights` table above (applied
-      -- only once that scheduled load() fires), the teal snapshot would
-      -- already be baked into the rendered image by the time it lands.
-      -- Set it here instead: synchronously, so it exists before anything
-      -- can read it. It's safe from NvChad's later base46 cache
-      -- reapplication (the reason the rest of this config has to be
-      -- deferred in the first place) because that reapplication only
-      -- touches NvChad's own known highlight groups, never third-party
-      -- ones it has no knowledge of like this one.
-      vim.api.nvim_set_hl(0, "SnacksImageMath", { fg = "#ecd3a0" })
-
-      -- init.lua re-applies NvChad's base46 "defaults"/"statusline" cache
-      -- *after* lazy.setup() returns, which would stomp these highlights
-      -- if set synchronously here -- defer to the next event loop tick so
-      -- this runs last and is the startup default. <leader>tc (mappings.lua)
-      -- still flips back to the hardcoded zenbones_custom theme and back.
-      vim.schedule(function()
-        require("cyberdream").load()
-      end)
-    end,
-  },
-  {
     "gen740/SmoothCursor.nvim",
     event = "VeryLazy",
     opts = {
@@ -128,16 +27,8 @@ return {
     end,
   },
 
-  -- Cross-file function suggestions: merges into NvChad's nvim-cmp spec.
-  -- Requires universal-ctags + a `tags` file in the project root
-  -- (generate with `ctags -R .` or <leader>ct).
-  --
-  -- `tags` and `buffer` do plain fuzzy TEXT matching (any word from ctags /
-  -- open buffers), with no idea what scope/type you're in. Left ungrouped
-  -- with nvim_lsp, their hits rank in the same merged list as clangd's
-  -- semantic completions -- that's the "suggests random words" symptom.
-  -- Fix: two groups. Group 1 (lsp+snippets) is tried first; group 2
-  -- (buffer+tags) only kicks in when group 1 returns nothing.
+  -- cross-file suggestions via ctags, needs `tags` file
+  -- two priority groups: lsp+snippets first, buffer+tags fallback
   {
     "hrsh7th/nvim-cmp",
     dependencies = {
@@ -155,18 +46,7 @@ return {
         { name = "tags" },
       })
 
-      -- NvChad's default <Tab> steals the key the moment the menu is merely
-      -- VISIBLE (cmp.visible()), not when you've actually picked an item --
-      -- so moving the cursor away and hitting Tab to indent selects/confirms
-      -- a stale suggestion instead.
-      --
-      -- Wanted behavior: Enter accepts, arrows navigate, Tab dismisses the
-      -- menu (first press) and only then falls through to a real tab
-      -- (second press, menu already closed). Tab must never jump the cursor
-      -- via luasnip -- expand_or_jumpable()/jumpable() reflect global
-      -- session state (any snippet left un-exited anywhere in the buffer),
-      -- not "cursor is inside a snippet right now", so they were teleporting
-      -- the cursor unpredictably.
+      -- Tab dismisses menu first, indents second; never jumps via luasnip
       opts.mapping["<Tab>"] = cmp.mapping(function(fallback)
         if cmp.visible() then
           cmp.abort()
@@ -202,11 +82,7 @@ return {
       return opts
     end,
   },
-  -- Compiled LaTeX preview (real document layout: fonts, sections, page
-  -- geometry -- not just inline math). markview's `tex` filetype support
-  -- (configs.markview) only renders math snippets and is a no-op on a
-  -- full `\documentclass` file like a resume, so this handles that case
-  -- separately: latexmk compiles on save, vimtex opens/syncs okular.
+  -- full document LaTeX preview: latexmk compiles, vimtex syncs okular
   {
     "lervag/vimtex",
     lazy = false, -- must load before the first .tex buffer opens
@@ -241,9 +117,7 @@ return {
     end
   },
 
-  -- Retires every teal-hued file icon devicons ships (cpp, go, jsx,
-  -- hyprland.conf, ...) to the same soft-gold that cyberdream's `cyan`
-  -- override (above) already uses -- see configs/devicons.lua for why.
+  -- remaps teal-hued devicons to theme's soft-gold
   {
     "nvim-tree/nvim-web-devicons",
     opts = require "configs.devicons",
@@ -252,9 +126,7 @@ return {
     "nvim-treesitter/nvim-treesitter",
     branch = "main",
     build = ":TSUpdate",
-    -- On the `main` branch, setup() only understands `install_dir` --
-    -- `ensure_installed` in opts is silently ignored (nothing reads it).
-    -- Parsers have to be installed explicitly.
+    -- main branch ignores ensure_installed, install explicitly
     config = function()
       require("nvim-treesitter").install {
         "vim", "lua", "vimdoc",
@@ -271,45 +143,21 @@ return {
     end,
   },
 
-  -- Markdown/LaTeX visualizer: real split window (source left, rendered
-  -- preview right), autodetected by filetype. configs.markview turns off
-  -- markview's own inline/conceal rendering (preview.enable = false) so the
-  -- SOURCE buffer stays plain, editable text -- only markview's `splitOpen`
-  -- preview buffer gets rendered. On every markdown/tex buffer we open that
-  -- split automatically, and on `MarkviewSplitviewOpen` we attach
-  -- snacks.image (real pdflatex-compiled math, see configs.snacks) to the
-  -- preview buffer only, so math images never land in the editable side.
+  -- split preview: source stays plain text, preview buffer gets rendering
   {
     "OXY2DEV/markview.nvim",
     lazy = false, -- already lazy-loads itself; see plugin README
     config = function()
       require("markview").setup(require "configs.markview")
 
-      -- Default MarkviewHeading1-6 are `:hi link`ed to a generated
-      -- MarkviewPaletteN group carrying a per-level colored BACKGROUND
-      -- block (that's what actually made headings look like a boxed icon,
-      -- not the icon glyph itself, which configs.markview already turned
-      -- off) -- and that link gets (re-)established every time markview
-      -- actually renders a buffer, which for this setup only ever happens
-      -- inside splitview_render(), called synchronously right after
-      -- `MarkviewSplitviewOpen` fires. Setting this before setup() or
-      -- before that render doesn't survive it, so reapply on the next
-      -- tick after each split opens instead: bold, no bg, plain
-      -- foreground, closer to how GitHub renders headings (weight, not a
-      -- colored chip).
+      -- reapplied each tick: markview re-links heading bg on every render
       local function plain_headings()
         for i = 1, 6 do
           vim.api.nvim_set_hl(0, "MarkviewHeading" .. i, { fg = "#dcdcd4", bold = true })
         end
       end
 
-      -- `MarkviewSplitviewOpen` fires before `splitview_render()` has
-      -- copied any text into the preview buffer (see actions.splitOpen in
-      -- markview's source: the autocmd fires, THEN splitview_render()
-      -- runs). Attaching snacks.image here finds an empty buffer -- no
-      -- math nodes, so nothing ever resolves past its placeholder icon.
-      -- Deferring both this and plain_headings to the next tick lets
-      -- splitview_render() finish first.
+      -- deferred: preview buffer is empty until splitview_render() finishes
       vim.api.nvim_create_autocmd("User", {
         pattern = "MarkviewSplitviewOpen",
         group = vim.api.nvim_create_augroup("markview_snacks_math", { clear = true }),
@@ -321,10 +169,7 @@ return {
         end,
       })
 
-      -- markdown only: markview's tex support renders inline math, not
-      -- full document layout, so it's a no-op split on a real .tex file
-      -- (resume, paper, ...) -- that case is handled by vimtex + okular
-      -- instead (configs.vimtex), which shows the actual compiled PDF.
+      -- markdown only; tex handled separately by vimtex
       vim.api.nvim_create_autocmd("FileType", {
         pattern = { "markdown" },
         group = vim.api.nvim_create_augroup("markview_autosplit", { clear = true }),
@@ -358,51 +203,43 @@ return {
     event = "VeryLazy",
     opts = {
       options = {
-        -- theme = "auto" samples highlight groups (PmenuSel, String,
-        -- Special/Boolean, ...) once at lualine's own load time via a
-        -- require()-cached module -- racy against cyberdream's own load
-        -- (deferred with vim.schedule in this config), so it can freeze in
-        -- cyberdream's raw defaults (teal/pink) instead of our overrides.
-        -- An explicit theme built from the same palette can't drift.
+        -- explicit palette, avoids theme="auto" freezing stale colors
         theme = {
           normal = {
-            a = { bg = "#ffbd5e", fg = "#040403", gui = "bold" }, -- orange (Keyword)
-            b = { bg = "#0a0908", fg = "#ffbd5e" },
-            c = { bg = "#161412", fg = "#dcdcd4" },
+            a = { bg = "#ffbd5e", fg = "#040404", gui = "bold" }, -- orange (Keyword)
+            b = { bg = "#090909", fg = "#ffbd5e" },
+            c = { bg = "#141414", fg = "#dcdcd4" },
           },
           insert = {
-            a = { bg = "#b5a494", fg = "#040403", gui = "bold" }, -- green (Type)
-            b = { bg = "#0a0908", fg = "#b5a494" },
-            c = { bg = "#161412", fg = "#dcdcd4" },
+            a = { bg = "#b5a494", fg = "#040404", gui = "bold" }, -- green (Type)
+            b = { bg = "#090909", fg = "#b5a494" },
+            c = { bg = "#141414", fg = "#dcdcd4" },
           },
           visual = {
-            a = { bg = "#ecd3a0", fg = "#040403", gui = "bold" }, -- soft-gold
-            b = { bg = "#0a0908", fg = "#ecd3a0" },
-            c = { bg = "#161412", fg = "#dcdcd4" },
+            a = { bg = "#ecd3a0", fg = "#040404", gui = "bold" }, -- soft-gold
+            b = { bg = "#090909", fg = "#ecd3a0" },
+            c = { bg = "#141414", fg = "#dcdcd4" },
           },
           replace = {
-            a = { bg = "#bd8c70", fg = "#040403", gui = "bold" }, -- rust-orange (String)
-            b = { bg = "#0a0908", fg = "#bd8c70" },
-            c = { bg = "#161412", fg = "#dcdcd4" },
+            a = { bg = "#bd8c70", fg = "#040404", gui = "bold" }, -- rust-orange (String)
+            b = { bg = "#090909", fg = "#bd8c70" },
+            c = { bg = "#141414", fg = "#dcdcd4" },
           },
           command = {
-            a = { bg = "#dcdcd4", fg = "#040403", gui = "bold" }, -- dimmed white
-            b = { bg = "#0a0908", fg = "#dcdcd4" },
-            c = { bg = "#161412", fg = "#dcdcd4" },
+            a = { bg = "#dcdcd4", fg = "#040404", gui = "bold" }, -- dimmed white
+            b = { bg = "#090909", fg = "#dcdcd4" },
+            c = { bg = "#141414", fg = "#dcdcd4" },
           },
           inactive = {
-            a = { bg = "#0a0908", fg = "#4c4b3c" },
-            b = { bg = "#0a0908", fg = "#4c4b3c" },
-            c = { bg = "#0a0908", fg = "#4c4b3c" },
+            a = { bg = "#090909", fg = "#4c4b3c" },
+            b = { bg = "#090909", fg = "#4c4b3c" },
+            c = { bg = "#090909", fg = "#4c4b3c" },
           },
         },
       },
     },
   },
-  -- <leader>fk (mappings.lua) fuzzy-searches keymaps by key + desc, but
-  -- NvChad's own opts (nvchad.configs.telescope) never sets pickers.keymaps
-  -- -- add it here instead of replacing NvChad's telescope config outright,
-  -- so this merges into it (see configs/telescope.lua for why).
+  -- merges keymaps picker into NvChad's own telescope opts
   {
     "nvim-telescope/telescope.nvim",
     opts = function(_, opts)
@@ -421,20 +258,14 @@ return {
       require("neogen").setup {
         snippet_engine = "luasnip", -- NvChad ships LuaSnip: tab through [TODO:...] fields
       }
-      -- neogen has no built-in keymaps (since v2.x), so we set our own:
-      -- <leader>c is only used by NvChad for ch/cheatsheet and cm/git-commits,
-      -- so "cg" ("c"omment "g"enerate) is conflict-free.
+      -- neogen has no built-in keymaps, cg is conflict-free
       vim.keymap.set("n", "<leader>cg", function()
         require("neogen").generate()
       end, { desc = "Neogen annotate (doxygen-style for c/cpp)" })
     end,
   },
 
-  -- Undo tree with diff preview: what `:undolist` wants to be. Shows the full
-  -- undo tree (all branches, not just the linear list) and, while you move
-  -- j/k over nodes, a preview of the file at that state with the exact lines
-  -- that differ from the current buffer marked +/- (UndotreeDiffAdded/Deleted).
-  -- <leader>u toggles the panel; <leader>uh (inlay hints) still works.
+  -- full undo tree with diff preview, all branches
   {
     "jiaoshijie/undotree",
     url = "git@github.com:jiaoshijie/undotree.git", -- only ssh clones on this machine
@@ -444,6 +275,36 @@ return {
     },
     keys = {
       { "<leader>u", "<cmd>lua require('undotree').toggle()<cr>", desc = "Undo tree with diff preview" },
+    },
+  },
+
+  -- adds border to preview_hunk float, NvChad leaves it borderless
+  {
+    "lewis6991/gitsigns.nvim",
+    opts = function(_, opts)
+      opts.preview_config = vim.tbl_deep_extend("force", opts.preview_config or {}, {
+        border = "rounded",
+      })
+      return opts
+    end,
+  },
+
+  -- floating per-project todo list, not code-comment-based
+  {
+    "pablopunk/todo.nvim",
+    config = true,
+    keys = {
+      { "<leader>td", "<cmd>TodoToggle<cr>", desc = "Toggle project todo list" },
+    },
+  },
+
+  -- sticky header shows enclosing function/struct signature
+  {
+    "nvim-treesitter/nvim-treesitter-context",
+    event = { "BufReadPre", "BufNewFile" },
+    opts = {
+      max_lines = 3,
+      multiline_threshold = 1,
     },
   },
 }

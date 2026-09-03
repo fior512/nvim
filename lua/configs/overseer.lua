@@ -1,36 +1,21 @@
--- Overseer task templates for C/C++ (HPC) workflows.
---
--- Two kinds of defs: buffer-based (compile/build) use ctx.file/.bin/.dir,
--- require filetype cpp/c, cwd to the buffer's dir. needs_bin = true tasks
--- (perf, valgrind, mca, asm, ...) take an explicit "binary" param instead,
--- work without a C/C++ buffer, cwd to Neovim's own cwd.
---
--- No top-level require("overseer"): mappings.lua requires this module to
--- reach M.telescope_run(), and requiring overseer here would trigger
--- lazy-load before M is returned. Required lazily inside M.setup()/M.telescope_run().
+-- overseer task templates, C/C++ HPC workflows
+-- buffer-based defs need a C/C++ buffer; needs_bin ones take explicit binary
+-- lazy-required: avoids overseer load before M.setup()
 
 local M = {}
-M._names = {} -- template names, populated by M.setup(), consumed by the picker
--- name -> ordered list of { key, label, completion?, default? } prompts,
--- consumed by the chained vim.ui.input flow in the telescope picker below.
+M._names = {} -- template names, for picker
+-- name -> ordered prompt list for vim.ui.input chain
 M._prompts = {}
--- name -> { key, title, choices = fn-or-list } for templates that get a
--- third telescope level: an enum param picked in a picker instead of via
--- vim.ui.input. Only likwid-perfctr registers one today.
+-- name -> enum-pick config, only likwid-perfctr uses this
 M._enum_picks = {}
--- Every def.name is "Group: action" (e.g. "perf: stat"); the two-level
--- telescope picker groups by the part before ": " so the top-level list
--- shows one entry per tool instead of every action flattened together.
--- M._group_order: tool names in first-seen order.
--- M._by_group[tool] = ordered list of { name = full template name, action = label after ": " }.
+-- groups defs by "Group: action" prefix, for two-level picker
 M._group_order = {}
 M._by_group = {}
 
 local STD = "-std=c++20"
--- performance-avoid-endl: "do not use 'std::endl' with streams" (clang-tidy >= 20)
--- bugprone-easily-swappable-parameters: "N adjacent parameters of similar type are easily swapped by accident"
+-- clang-tidy checks: endl usage, swappable params
 
--- Paths derived from the current buffer, resolved at task-build time.
+-- resolved from current buffer at task-build time
 local function ctx()
   local file = vim.fn.expand "%:p"
   return {
@@ -57,8 +42,7 @@ local function has_bcc(base)
   return vim.fn.executable(base .. "-bpfcc") == 1 or vim.fn.executable(base) == 1
 end
 
--- PMU raw event names are vendor-specific; picks the event list for
--- "perf: stat microarch".
+-- detects vendor for PMU event list
 local function cpu_vendor()
   local ok, lines = pcall(vim.fn.readfile, "/proc/cpuinfo", "", 30)
   if ok then
@@ -73,9 +57,7 @@ local function cpu_vendor()
   return "unknown"
 end
 
--- bat's bundled palettes don't match this colorscheme, so generate a
--- .tmTheme from the live highlight groups instead. Re-synced on every call
--- (cheap, picks up mid-session :colorscheme changes) rather than cached.
+-- generates .tmTheme from live highlight groups, re-synced each call
 local BAT_THEME_NAME = "NvimSync"
 local BAT_THEME_SCOPES = {
   { "comment", { "@comment", "Comment" } },
@@ -165,15 +147,13 @@ local function sync_bat_theme()
   return BAT_THEME_NAME
 end
 
--- Build systems (justfile/CMake/etc.) may not name the binary "<file>:r",
--- so needs_bin defs take an explicit required "binary" param instead.
+-- needs_bin defs pass explicit binary path
 local function resolve_bin(_, p)
   local bin = vim.fn.expand(p.bin)
   return bin, vim.fn.shellescape(bin)
 end
 
--- takes_args = true defs get an optional "args" param, appended unescaped
--- (quoting is the user's to control) right after the binary.
+-- optional args param, appended unescaped after binary
 local function resolve_args(p)
   if p and p.args and p.args ~= "" then
     return " " .. p.args
@@ -181,8 +161,7 @@ local function resolve_args(p)
   return ""
 end
 
--- "<date> (<age> ago)" for a file's mtime, or "not found" - surfaces stale
--- binaries/snapshots before a task reads them.
+-- formats mtime as "date (age ago)", flags stale files
 local function human_age(mtime)
   if not mtime or mtime <= 0 then
     return "not found"
@@ -201,8 +180,7 @@ local function human_age(mtime)
   return os.date("%Y-%m-%d %H:%M:%S", mtime) .. " (" .. age .. " ago)"
 end
 
--- Flattens a table-form cmd into a shell string, each element escaped, so
--- the shared builder can echo what it's about to run for either form.
+-- flattens table-form cmd into escaped shell string
 local function to_shell_str(cmd)
   if type(cmd) == "table" then
     local parts = {}
@@ -214,14 +192,7 @@ local function to_shell_str(cmd)
   return cmd
 end
 
--- Shortens absolute paths in the echoed preamble (never the command that
--- actually runs) relative to the cwd Neovim started in, then home. Also
--- drops the single-quote shell-escaping around any token that doesn't
--- actually need it (no space/quote inside) - shellescape wraps every arg
--- for a table-form cmd regardless, which is correct for execution but
--- leaves the echoed line full of 'foo' 'bar' quoting that's annoying to
--- select/copy out of the task pane. task.cmd itself (what actually runs)
--- is built from the unmodified shell_cmd elsewhere, so this is display-only.
+-- display-only: shortens paths, drops unneeded quoting in echoed preamble
 local function shorten_display(str)
   local cwd = vim.fn.getcwd()
   local out = str
@@ -236,20 +207,13 @@ local function shorten_display(str)
   return out
 end
 
--- asm/mca/uica/pahole/bloaty read the already-linked binary via the same
--- needs_bin/resolve_bin mechanism as perf/valgrind/rr. Plain text, no TUI/pager.
+-- asm/mca/uica/pahole/bloaty: plain text output, no TUI/pager
 local ASM_SNAP_DIR = "/tmp/asm-snap"
 local BLOATY_SNAP_DIR = "/tmp/bloaty-snap"
 local PERF_SNAP_DIR = "/tmp/perf-snap"
 local OUTPUT_SNAP_DIR = "/tmp/output-snap"
 
--- Dropped the custom /proc/stat IQR core-picker: guessing "quiet" from tick
--- counts was a weak proxy. likwid-perfctr already does this properly when
--- given a core range instead of one core - it runs/measures on every core
--- in the range and prints a Sum/Min/Max/Avg row per metric, so cross-core
--- spread (the real noise signal) comes straight from likwid, no separate
--- sampler needed. Default: every core but the last one, leaving it free for
--- the OS/IRQs rather than pinning onto all of them.
+-- default core range: all but last, leaves one for OS/IRQs
 local function likwid_default_core_range()
   local n = tonumber(vim.fn.system "nproc")
   if not n or n <= 1 then
@@ -258,17 +222,8 @@ local function likwid_default_core_range()
   return "0-" .. (n - 2)
 end
 
--- likwid-perfctr -a prints a tab-aligned "name<tab>description" table; read
--- it live so the group list always matches the installed likwid. The old
--- hardcoded list drifted from 5.x reality (MEM_DP/CACHES no longer exist:
--- memory groups are MEM/MEMREAD/MEMWRITE now). Feeds both the enum schema
--- and the Level-3 group picker.
---
--- likwid prints its table in a fixed, unsorted order (L2 and L2CACHE end up
--- far apart), so sort the groups by meaning: roofline/ECM ingredients first
--- (memory bandwidth, FLOP/s), then cache/TLB, pipeline ratios, interconnect,
--- power. Groups a newer likwid adds that aren't in GROUP_ORDER fall back to
--- alphabetical at the end instead of breaking.
+-- reads groups live from likwid-perfctr -a, avoids stale hardcoded list
+-- sorted by meaning: roofline, cache/TLB, pipeline, interconnect, power
 local GROUP_ORDER = {}
 for i, name in ipairs {
   "MEM", "MEMREAD", "MEMWRITE", -- main memory bandwidth (roofline)
@@ -335,9 +290,7 @@ local function objdump_cmd(ebin, sym)
   return cmd .. " " .. ebin
 end
 
--- diff-highlight (ships with git, not always on PATH) highlights just the
--- changed substring within each -old/+new line pair. Falls back to
--- --word-diff=plain if not found anywhere on this machine.
+-- finds git's diff-highlight, else falls back to --word-diff
 local function find_diff_highlight()
   if vim.fn.executable "diff-highlight" == 1 then
     return "diff-highlight"
@@ -356,8 +309,7 @@ local function find_diff_highlight()
 end
 local DIFF_HIGHLIGHT = find_diff_highlight()
 
--- --no-pager: overseer's task pane looks like a tty to git, which would
--- otherwise invoke $PAGER and hang. --no-index: diff any two files, no repo needed.
+-- --no-pager avoids hang; --no-index diffs files outside a repo
 local function diff_cmd(old, new)
   local base = "git --no-pager diff --no-index --color=always -- " .. old .. " " .. new
   if DIFF_HIGHLIGHT then
@@ -366,32 +318,18 @@ local function diff_cmd(old, new)
   return "git --no-pager diff --no-index --color=always --word-diff=plain --word-diff-regex='\\S+' -- " .. old .. " " .. new
 end
 
--- Given a ctags signature line: walks up past template<>/requires/attribute
--- lines, then counts braces forward to the matching close. Naive brace
--- counting (breaks on braces in strings/comments), not a full parser.
--- Returns a "first end" line range (not the body text) so the caller can
--- bat --line-range the real file, keeping bat's gutter numbers accurate.
+-- naive brace-counting from ctags line, returns first/end range for bat
 local CTAGS_EXTRACT_RANGE_AWK = [==[{ lines[NR] = $0; last = NR } END { first = target; while (first > 1) { prev = lines[first - 1]; if (prev ~ /^[[:space:]]*template[[:space:]]*</ || prev ~ /^[[:space:]]*requires\y/ || prev ~ /^[[:space:]]*\[\[.*\]\][[:space:]]*$/) { first = first - 1 } else { break } } depth = 0; started = 0; for (i = first; i <= last; i++) { line = lines[i]; if (i >= target) { n = gsub(/{/, "{", line); m = gsub(/}/, "}", line); depth += n - m; if (depth > 0) started = 1; if (started && depth == 0) { print first" "i; exit } } } print first" "last }]==]
 
--- bcc reads the ELF symbol table directly (no demangling), so a readable
--- C++ name like SIMD_fnv1a_Search must resolve to its mangled symbol first.
--- Matches T/t/W/w symbols (t covers static) via nm -C, word-boundary only
--- (a substring match once silently resolved "fnv1a" to the wrong function
--- inside SIMD_fnv1a_Search). No exact match: lists substring hints instead
--- of guessing (small statics are often inlined away with no symbol at all).
--- Expects $bin/$func set by caller; sets $mangled or exits with an explanation.
+-- resolves C++ name to mangled symbol via nm -C, word-boundary match
+-- expects $bin/$func set by caller; sets $mangled or exits
 local RESOLVE_SYMBOL_SH = [==[addr=$(nm -C "$bin" 2>/dev/null | awk -v f="$func" '$2 ~ /^[TtWw]$/ { name=$0; sub(/^[0-9a-f]+ +[A-Za-z] +/, "", name); if (name ~ ("\\<" f "\\>")) { print $1; exit } }'); if [ -z "$addr" ]; then echo "no function named exactly '$func' found in $bin (it may have been inlined away at this optimization level, especially if it's a small 'static' function)"; hint=$(nm -C "$bin" 2>/dev/null | awk -v f="$func" '$2 ~ /^[TtWw]$/ { name=$0; sub(/^[0-9a-f]+ +[A-Za-z] +/, "", name); if (index(name, f) > 0) print name }' | head -3); if [ -n "$hint" ]; then echo "closest matches (not used automatically):"; echo "$hint"; else echo "try: nm -C $bin | grep -i '$func'"; fi; exit 1; fi; mangled=$(nm "$bin" 2>/dev/null | awk -v a="$addr" '$1==a { print $3; exit }'); if [ -z "$mangled" ]; then echo "resolved address $addr for '$func' but found no matching raw symbol (unexpected)"; exit 1; fi]==]
 
--- For diffing/snapshots: strips address/byte-offset prefixes, collapses
--- compiler-generated .L labels, drops .cfi_ directives and padding nops,
--- and blurs long literal addresses so diffs stay quiet across rebuilds.
+-- strips addresses/labels/nops so diffs stay quiet across rebuilds
 local SED_NORMALIZE =
   "sed -E 's/^[[:space:]]*[0-9a-f]+:[[:space:]]*//; s/\\.L[A-Za-z]+[0-9_]+/.L/g; /\\.cfi_/d; /^[[:space:]]*nop/d; s/0x[0-9a-f]{6,}/0xADDR/g'"
 
--- Must stay valid assembly for llvm-mca/uiCA, so unlike SED_NORMALIZE it
--- can't blur addresses. Drops branch/call/ret/loop (targets undefined in
--- this snippet) - lossy on branchy code, but mca only models straight-line
--- port/latency pressure anyway.
+-- keeps valid asm for mca/uiCA; drops branch/call/ret/loop
 local MCA_STRIP = "sed -E "
   .. "-e '/^[[:space:]]*$/d' "
   .. "-e '/: *file format/d' "
@@ -402,25 +340,18 @@ local MCA_STRIP = "sed -E "
   .. "-e '/^[[:space:]]*nop/d' "
   .. "-e '/^[[:space:]]*(j[a-z]*|call|ret[a-z]*|loop[a-z]*)([[:space:]]|$)/d'"
 
--- llvm-mca's critical-sequence table sits between the summary and the
--- -all-stats tables, so mca is split into two tasks. Drops the table for
--- "mca: throughput" by indentation: rows are blank/indented/"+----", the
--- next section header starts at column 0.
+-- drops critical-sequence table for "mca: throughput" task
 local MCA_DROP_CRITSEQ = "awk '"
   .. "/^Critical sequence/ { skip = 1; next } "
   .. "skip && ($0 ~ /^[[:space:]]/ || $0 ~ /^$/ || $0 ~ /\\+----/) { next } "
   .. "{ skip = 0; print }'"
 
--- Only "+----"-marked rows explain a stall; used by "mca: critical path",
--- which drops -all-stats so nothing follows the table (safe to filter to end).
+-- keeps only "+----" rows, used by "mca: critical path"
 local MCA_CRITSEQ_ONLY = "awk '/^Critical sequence/{in_seq=1} "
   .. "{ if (!in_seq) { print; next } "
   .. "if ($0 ~ /\\+----/ || $0 ~ /Dependency Information/ || $0 ~ /^Critical sequence/ || $0 ~ /^$/) print }'"
 
--- Flag presets for "C++: compile": { mode name, flags, emit -o?, compiler }.
--- asm-dump skips -o (-S writes <file>.s next to source). pgo-generate/-use
--- are a sequential two-step workflow, not interchangeable. opt-remarks needs
--- clang++: its -Rpass diagnostics beat gcc's -fopt-info for vectorize/inline.
+-- compile mode presets: { name, flags, emit -o?, compiler }
 local COMPILE_MODES = {
   { "debug", { "-g", "-O0", "-Wall", "-Wextra", "-Wconversion", "-Wsign-conversion" }, true },
   { "release", { "-O3", "-march=native" }, true },
@@ -452,17 +383,7 @@ for _, m in ipairs(COMPILE_MODES) do
   COMPILE_MODE_BY_NAME[m[1]] = m
 end
 
--- clang-tidy only reports warnings/errors in the file it was asked to check
--- (--header-filter defaults to matching nothing), but a "note:" attached to
--- one of those warnings - e.g. an analyzer's exception-path trace - can
--- still point into any transitively-included header, including fully
--- external ones like /usr/include/ROOT/*.hxx. That's just noise for a
--- single-file check: keeps every warning/error, drops a note only when its
--- own location isn't this file. Colors afterward, by hand, on the plain
--- (--use-color-less) output: clang-tidy's own --use-color puts ANSI codes
--- between "file:line:col: " and "warning:"/"note:", which breaks the exact
--- plain-text match this filter depends on - so color has to be added here,
--- after filtering, not requested from clang-tidy itself.
+-- drops notes pointing outside target file; colors added after filtering
 local function tidy_note_filter(target_efile)
   return "awk -v target="
     .. target_efile
@@ -491,9 +412,7 @@ BEGIN {
 ']==]
 end
 
--- One "tidy: <category>" def. checks is a clang-tidy --checks value (comma
--- list, "-name" entries excluded). --header-filter='': explicit, don't rely
--- on the implicit default. -quiet: drop the "N warnings generated" banner.
+-- builds one "tidy: <category>" def from a --checks value
 local function tidy_def(category, checks, desc)
   return {
     name = "tidy: " .. category,
@@ -526,10 +445,7 @@ local function cppcheck_def(category, enable, desc)
   }
 end
 
--- rustc's diagnostic format ("error[E0308]: mismatched types" then a
--- separate " --> src/main.rs:3:5" line) doesn't match vim's gcc-oriented
--- default 'errorformat', so on_output_quickfix would silently populate
--- nothing -- this is rust.vim's own cargo compiler errorformat instead.
+-- rust.vim's cargo errorformat, rustc's format doesn't match gcc default
 local CARGO_EFM = table.concat({
   [[%-GCompiling\ %.%#]],
   [[%-GFinished\ %.%#]],
@@ -546,11 +462,7 @@ local function cargo_quickfix()
   return { { "on_output_quickfix", open_on_error = true, errorformat = CARGO_EFM }, "default" }
 end
 
--- Each def: { name, desc?, tags?, quickfix?, needs_bin?, condition_callback?,
---             params?, build = fn(ctx, params) -> task }
--- build() returns a task-opts table; cmd may be a list (exec directly) or a
--- shell string (pipes/globs/&& work). info_lines (array of strings) adds
--- extra facts the shared builder echoes before running.
+-- def: { name, desc?, tags?, params?, build = fn(ctx, params) -> task }
 local defs = {
   -----------------------------------------------------------------------------
   -- Compile (single template, "mode" param picks the flag preset)
@@ -606,9 +518,7 @@ local defs = {
     end,
   },
   {
-    -- Saves this run's stdout; "C++: diff output snapshot" below runs a
-    -- (possibly different) binary and diffs against it. Same snapshot/diff
-    -- pairing as asm/bloaty/perf, sourced from stdout instead of a static file.
+    -- paired with "C++: diff output snapshot" below
     name = "C++: create output snapshot",
     desc = "Run the binary, save its stdout for diffing against a second run",
     tags = { "RUN" },
@@ -653,23 +563,19 @@ local defs = {
   -- perf
   -----------------------------------------------------------------------------
   {
-    -- -ddd adds counters onto perf's default group; an explicit -e list would
-    -- replace it instead (why the old "stat detailed" showed less than "stat").
+    -- -ddd adds counters onto default group, unlike explicit -e list
     name = "perf: stat",
     desc = "-ddd: max detail (adds counters on top of perf's default metrics)",
     needs_bin = true,
     takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
-      -- perf's report goes to stderr; > /dev/null only silences the
-      -- target binary's own stdout.
+      -- perf report on stderr; /dev/null silences binary stdout only
       return { cmd = string.format("perf stat -d -d -d %s%s > /dev/null", ebin, resolve_args(p)) }
     end,
   },
   {
-    -- Fixed raw -e list, invisible in a normal profile: 4K aliasing, split
-    -- loads/stores, failed store-forwarding, DSB fallout, denormal/FP
-    -- assists, per-port dispatch pressure. Reads 0 on non-SIMD code.
+    -- fixed raw -e list, reads 0 on non-SIMD code
     name = "perf: stat microarch",
     desc = "split/misaligned loads, op-cache fallout, FP fill/spill faults, vector-op count. SIMD-relevant, 0 on scalar code",
     needs_bin = true,
@@ -721,9 +627,7 @@ local defs = {
     end,
   },
   {
-    -- Raw cache-miss surface, not a 4C classification (needs a working-set
-    -- sweep). Coherence misses are "perf: c2c"'s job. AMD path substitutes
-    -- l2_request_g1 for LLC-load-misses: no amd_l3 uncore PMU on this part.
+    -- AMD path substitutes l2_request_g1 for LLC-load-misses
     name = "perf: stat cache",
     desc = "Cache-miss surface across the hierarchy (not a 4C classification, see desc on each vendor path)",
     needs_bin = true,
@@ -756,9 +660,7 @@ local defs = {
     end,
   },
   {
-    -- Native L1 topdown via perf's own -M metrics, no toplev.py needed.
-    -- perf's --topdown flag only works with Intel's TopdownL1+ groups and
-    -- errors on this AMD Zen4.
+    -- -M metrics avoid --topdown, which errors on AMD Zen4
     name = "perf: stat topdown",
     desc = "Level-1 topdown breakdown via perf's own -M metrics, works without toplev",
     needs_bin = true,
@@ -775,9 +677,7 @@ local defs = {
     end,
   },
   {
-    -- Self-contained: records fresh into /tmp/perf.data each run. Without
-    -- --percent-limit, perf report lists every symbol ever sampled (700+
-    -- entries of kernel/library noise), only the top ~20 carry any signal.
+    -- --percent-limit cuts kernel/library noise from symbol list
     name = "perf: report",
     needs_bin = true,
     takes_args = true,
@@ -794,10 +694,7 @@ local defs = {
     end,
   },
   {
-    -- A symbol shows one full function, in sequence. Without one,
-    -- --percent-limit is perf's function-selection cutoff (which functions
-    -- get annotated), not a line-level filter - neither path strips lines
-    -- out of a function's middle.
+    -- symbol selects one function; percent-limit filters which get annotated
     name = "perf: annotate",
     desc = "Give a symbol for one full function, or set min-percent to cap which functions get annotated",
     needs_bin = true,
@@ -833,17 +730,14 @@ local defs = {
     end,
   },
   {
-    -- One line per sampled event (flamegraph feedstock, not meant to be read
-    -- directly): 20K+ lines on a real run. Full output goes to a file, only
-    -- a head sample is shown here.
+    -- flamegraph feedstock, full output to file, head shown here
     name = "perf: script",
     desc = "Raw dump, feeds flamegraph tooling. Full output written to file, only a head sample shown",
     needs_bin = true,
     takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
-      -- PAGER=cat: perf script invokes $PAGER even with --stdio, and
-      -- overseer's task pane looks like a real tty to it.
+      -- PAGER=cat: perf script invokes $PAGER even with --stdio
       return {
         cmd = string.format(
           "perf record -o /tmp/perf.data -- %s%s > /dev/null "
@@ -883,9 +777,7 @@ local defs = {
     takes_args = true,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
-      -- PAGER=cat: c2c report doesn't fully honor --stdio, still invokes
-      -- $PAGER and blocks. Tried the ncurses browser instead: same
-      -- fixed-width wrap, plus fragile inside overseer's pane. Kept --stdio.
+      -- PAGER=cat: c2c report doesn't fully honor --stdio
       return {
         cmd = string.format(
           "PAGER=cat perf c2c record -- %s%s > /dev/null && PAGER=cat perf c2c report --stdio",
@@ -916,8 +808,7 @@ local defs = {
     end,
   },
   {
-    -- perf diff has no size-limit flag; same handling as "perf: script"'s
-    -- unbounded output - full diff to a file, only a head sample shown here.
+    -- perf diff has no size-limit flag, output written to file
     name = "perf: diff snapshot",
     desc = "Record fresh, diff against the last snapshot. Full diff written to file, only a head sample shown",
     needs_bin = true,
@@ -944,16 +835,8 @@ local defs = {
   -- bcc (Brendan Gregg's bpf tracing scripts), shown only when installed
   -----------------------------------------------------------------------------
   {
-    -- Without a duration, bcc tools run until Ctrl-C and print only on exit,
-    -- which looks like a stuck task. funccount only attaches uprobes/counts,
-    -- so it sees nothing unless the target runs during the window. "sudo -v"
-    -- is its own statement (";" not "&&"): it must block on the password
-    -- prompt before the rest races ahead (verified this race with "&&").
-    --
-    -- Stops as soon as the binary exits rather than making the user guess a
-    -- duration; -d/duration is just a safety ceiling for a hung binary. sudo
-    -- relays SIGINT to its child over a pty (man sudo); verified a backgrounded
-    -- job does receive kill -INT immediately from a non-interactive script.
+    -- stops tracer when binary exits, not on a fixed duration
+    -- "sudo -v" ";"-separated: must block for password before racing
     name = "bcc: funccount",
     desc = "Runs the binary while attached, stops as soon as it exits: bcc funccount over its functions (needs root/bcc)",
     condition_callback = function()
@@ -985,18 +868,14 @@ local defs = {
       local pat = (p.pattern and p.pattern ~= "") and p.pattern or "*"
       local ceiling = (p.duration and p.duration ~= "") and p.duration or "300"
       local bin, ebin = resolve_bin(c, p)
-      -- A glob (*/?) passes through to bcc as-is; a plain name resolves via
-      -- RESOLVE_SYMBOL_SH like funclatency, since bcc can't match a readable
-      -- C++ name against the mangled symbol table otherwise.
+      -- glob passes through; plain name resolves via RESOLVE_SYMBOL_SH
       local target_expr
       if pat:find "[*?]" then
         target_expr = "mangled=" .. vim.fn.shellescape(pat)
       else
         target_expr = "func=" .. vim.fn.shellescape(pat) .. "; " .. RESOLVE_SYMBOL_SH
       end
-      -- uprobe pattern: '<binary>:<glob-or-symbol>'. sudo: eBPF loading needs
-      -- CAP_BPF/CAP_SYS_ADMIN + raised RLIMIT_MEMLOCK; overseer's pane is a
-      -- real pty so sudo can prompt there.
+      -- sudo needed: eBPF loading requires CAP_BPF/CAP_SYS_ADMIN
       return {
         cmd = string.format(
           "sudo -v; bin=%s; %s; sudo %s \"$bin:$mangled\" %s & FLPID=$!; sleep 0.3; %s%s > /dev/null 2>&1; bin_status=$?; "
@@ -1013,8 +892,7 @@ local defs = {
     end,
   },
   {
-    -- Same "runs the binary while attached, stops when it exits" fix as
-    -- funccount above.
+    -- same stop-on-exit fix as funccount above
     name = "bcc: funclatency",
     desc = "Runs the binary while attached, stops as soon as it exits: bcc funclatency histogram for one function (needs root/bcc)",
     condition_callback = function()
@@ -1023,9 +901,7 @@ local defs = {
     needs_bin = true,
     takes_args = true,
     params = {
-      -- libbpf-tools rewrite (bcc-libbpf-tools on Arch/EndeavourOS) takes a
-      -- single exact PROGRAM:FUNCTION, no glob, duration via -d - different
-      -- syntax than the old bcc-python funclatency-bpfcc.
+      -- libbpf-tools variant needs exact PROGRAM:FUNCTION, no glob
       func = {
         type = "string",
         name = "function",

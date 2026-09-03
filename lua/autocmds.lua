@@ -1,14 +1,6 @@
 require "nvchad.autocmds"
 
--- clangd tags the body of inactive #if/#else preprocessor branches as an
--- LSP semantic token of type "comment" (@lsp.type.comment), which base46's
--- semantic_tokens integration links straight to Comment. hl_override in
--- chadrc.lua can't break that link (it deep-merges on top, so the old
--- `link = "Comment"` survives and wins over any fg we add), so fix it here
--- instead: dimmed like disabled code, but not italic/olive like real
--- comments, so inactive branches stay readable and distinguishable from
--- comments. Applied once at startup (this file loads after init.lua's
--- dofile of the compiled theme) and again on every :NvChadTheme reload.
+-- dims inactive #if/#else branches, distinct from real comments
 local function fix_lsp_comment_hl()
   vim.api.nvim_set_hl(0, "@lsp.type.comment", { fg = "#726d64", italic = false })
 end
@@ -18,13 +10,7 @@ vim.api.nvim_create_autocmd("User", {
   callback = fix_lsp_comment_hl,
 })
 
--- clangd's inactive-region "comment" token also covers real // and /* */
--- comments that happen to sit inside the disabled branch, so they'd get
--- swept into the dimmed @lsp.type.comment color above too. Catch those and
--- re-highlight them back to the real Comment group (higher priority wins
--- over the default token mark) so actual comments keep their true color
--- everywhere, active branch or not -- only genuinely-disabled code gets
--- dimmed.
+-- restores real comments inside dimmed inactive branches
 vim.api.nvim_create_autocmd("LspTokenUpdate", {
   callback = function(ev)
     local token = ev.data.token
@@ -54,9 +40,7 @@ vim.api.nvim_create_autocmd("LspTokenUpdate", {
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
     local client = vim.lsp.get_client_by_id(args.data.client_id)
-    -- gopls hints hit a core Neovim bug (inlay_hint.lua computes an out-of-range
-    -- extmark column on lines with multi-byte chars) that spams "Invalid 'col'"
-    -- errors, so keep hints off for it until upstream fixes the clamping.
+    -- gopls hints crash on multi-byte lines (nvim bug)
     if client and client.name ~= "gopls" and client:supports_method("textDocument/inlayHint") then
       vim.lsp.inlay_hint.enable(true, { bufnr = args.buf })
     end

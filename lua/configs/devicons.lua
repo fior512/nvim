@@ -1,14 +1,4 @@
--- nvim-web-devicons ships ~120 file-type icons with hardcoded colors,
--- independent of the active colorscheme -- overriding cyberdream's `cyan`
--- (plugins/init.lua) does nothing to them. Several common ones (cpp, cxx,
--- ixx, go, jsx, hyprland.conf, tsconfig.json, ...) are teal-family
--- (`#519ABA`, `#00AAAE`, `#00ADD8`, ...), so teal kept showing up in
--- nvim-tree/tabufline/telescope no matter what the theme said.
---
--- Same fix as the cyan retirement: scan every icon's color, and any hue in
--- the teal/cyan band gets remapped to the same soft-gold (`#ecd3a0`) that
--- absorbed `cyan` there. Automatic and future-proof against devicons adding
--- more icons later, instead of listing extensions by hand.
+-- remaps devicon teal hues to theme's soft-gold
 
 local function rgb_to_hsl(hex)
 	local r = tonumber(hex:sub(2, 3), 16) / 255

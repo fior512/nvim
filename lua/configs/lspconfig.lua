@@ -1,9 +1,6 @@
 require("nvchad.configs.lspconfig").defaults()
 
--- Keep tag completion (cmp-nvim-tags) fast & deterministic: once an LSP server
--- attaches, Neovim routes tag lookups through `vim.lsp.tagfunc` (workspace/symbol),
--- which some servers (html, cssls) don't even support. Clearing it makes
--- tag completion read the `tags` file directly. `gd`/`gD` still use LSP.
+-- force tag completion to read tags file, not LSP
 vim.lsp.config("*", {
   on_attach = function(_, bufnr)
     vim.bo[bufnr].tagfunc = nil
@@ -27,8 +24,6 @@ vim.lsp.config("clangd", {
   settings = {
     clangd = {
       InlayHints = {
-        -- clangd >= 16: the `--inlay-hints` CLI flag is obsolete/ignored,
-        -- inlay hints are configured through LSP settings (or a .clangd file).
         Enabled = "Yes",        -- master switch for inlay hints
         DeducedTypes = "Yes",   -- show the REAL type of `auto` vars, e.g. `auto x: int = 1;`
         ParameterNames = "Yes", -- show parameter names in function calls

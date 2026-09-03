@@ -23,8 +23,28 @@ require("lazy").setup({
   { import = "plugins" },
 }, lazy_config)
 
-dofile(vim.g.base46_cache .. "defaults")
-dofile(vim.g.base46_cache .. "statusline")
+-- loads all base46 groups; overridden plugin specs skip their own dofile
+require("nvchad.base46").load {
+  "blankline",
+  "blink",
+  "cmp",
+  "defaults",
+  "devicons",
+  "git",
+  "lsp",
+  "mason",
+  "nvcheatsheet",
+  "nvimtree",
+  "statusline",
+  "syntax",
+  "treesitter",
+  "tbline",
+  "telescope",
+  "whichkey",
+}
+
+-- must exist before snacks.image reads it once, on first load
+vim.api.nvim_set_hl(0, "SnacksImageMath", { fg = "#ecd3a0" })
 
 require "options"
 require "autocmds"

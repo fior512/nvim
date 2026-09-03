@@ -10,7 +10,7 @@ vim.lsp.config("*", {
   end,
 })
 
-local servers = { "html", "cssls", "clangd", "ts_ls", "marksman", "julials" }
+local servers = { "html", "cssls", "clangd", "ts_ls", "marksman", "julials", "gopls" }
 vim.lsp.enable(servers)
 
 vim.lsp.config("clangd", {
@@ -39,6 +39,26 @@ vim.lsp.config("clangd", {
 
 vim.lsp.config("julials", {
   cmd = { "julia", "--startup-file=no", "--history-file=no", "-e", "using LanguageServer; runserver()" },
+})
+
+vim.lsp.config("gopls", {
+  settings = {
+    gopls = {
+      analyses = {
+        unusedparams = true,
+      },
+      staticcheck = true,
+      hints = {
+        assignVariableTypes = true,
+        compositeLiteralFields = true,
+        compositeLiteralTypes = true,
+        constantValues = true,
+        functionTypeParameters = true,
+        parameterNames = true,
+        rangeVariableTypes = true,
+      },
+    },
+  },
 })
 
 

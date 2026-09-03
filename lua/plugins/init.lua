@@ -256,6 +256,7 @@ return {
         "html", "css",
         "cpp", "c",
         "rust",
+        "go", "gomod", "gosum", "gowork",
         "julia",
         "markdown", "markdown_inline",
         "typescript", "tsx",

@@ -2185,6 +2185,111 @@ local defs = {
       return { cmd = { "cargo", "doc", "--open", "--no-deps" } }
     end,
   },
+
+  -----------------------------------------------------------------------------
+  -- Go: no_buffer, not tied to the current file, same reasoning as the Cargo
+  -- section above -- `go` walks up to the enclosing module itself, and these
+  -- are always shown once `go` is on PATH regardless of cwd depth within the
+  -- module. gopls handles LSP diagnostics/formatting separately (see
+  -- configs/lspconfig.lua); these are just the build/run/test loop.
+  -----------------------------------------------------------------------------
+  {
+    name = "Go: build",
+    tags = { "BUILD" },
+    no_buffer = true,
+    quickfix = true,
+    condition_callback = function()
+      return vim.fn.executable "go" == 1
+    end,
+    build = function()
+      return { cmd = { "go", "build", "./..." } }
+    end,
+  },
+  {
+    name = "Go: run",
+    tags = { "RUN" },
+    no_buffer = true,
+    takes_args = true,
+    condition_callback = function()
+      return vim.fn.executable "go" == 1
+    end,
+    params = {
+      args = { type = "string", name = "args", desc = "arguments passed to the program (blank = none)", optional = true },
+    },
+    prompts = { { key = "args", label = "Args (blank = none): ", required = false } },
+    build = function(_, p)
+      return { cmd = "go run ." .. resolve_args(p) }
+    end,
+  },
+  {
+    name = "Go: test",
+    tags = { "TEST" },
+    no_buffer = true,
+    quickfix = true,
+    condition_callback = function()
+      return vim.fn.executable "go" == 1
+    end,
+    params = {
+      run = { type = "string", name = "run", desc = "test name filter (-run regexp, blank = all)", optional = true },
+    },
+    prompts = { { key = "run", label = "Test filter (blank = all): ", required = false } },
+    build = function(_, p)
+      local run = (p.run and p.run ~= "") and (" -run " .. vim.fn.shellescape(p.run)) or ""
+      return { cmd = "go test ./..." .. run .. " -v" }
+    end,
+  },
+  {
+    name = "Go: vet",
+    desc = "Fast static-check pass, no build artifacts",
+    tags = { "BUILD" },
+    no_buffer = true,
+    quickfix = true,
+    condition_callback = function()
+      return vim.fn.executable "go" == 1
+    end,
+    build = function()
+      return { cmd = { "go", "vet", "./..." } }
+    end,
+  },
+  {
+    name = "Go: lint",
+    desc = "golangci-lint run",
+    no_buffer = true,
+    quickfix = true,
+    condition_callback = function()
+      return vim.fn.executable "golangci-lint" == 1
+    end,
+    build = function()
+      return { cmd = { "golangci-lint", "run", "./..." } }
+    end,
+  },
+  {
+    name = "Go: mod tidy",
+    no_buffer = true,
+    condition_callback = function()
+      return vim.fn.executable "go" == 1
+    end,
+    build = function()
+      return { cmd = { "go", "mod", "tidy" } }
+    end,
+  },
+  {
+    name = "Go: build+run",
+    desc = "Chain build + run in one task",
+    tags = { "RUN" },
+    no_buffer = true,
+    takes_args = true,
+    condition_callback = function()
+      return vim.fn.executable "go" == 1
+    end,
+    params = {
+      args = { type = "string", name = "args", desc = "arguments passed to the program (blank = none)", optional = true },
+    },
+    prompts = { { key = "args", label = "Args (blank = none): ", required = false } },
+    build = function(_, p)
+      return { cmd = "go build -o /tmp/go-build-run ./... && /tmp/go-build-run" .. resolve_args(p) }
+    end,
+  },
 }
 
 -- Run from the plugin config (see lua/plugins/init.lua). Registers every

@@ -45,6 +45,7 @@ local options = {
     c = { "clang-format", "min_blank_lines" },
     cpp = { "clang-format", "min_blank_lines" },
     rust = { "rustfmt" },
+    go = { "gofumpt" },
   },
 }
 

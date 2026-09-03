@@ -54,7 +54,10 @@ vim.api.nvim_create_autocmd("LspTokenUpdate", {
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
     local client = vim.lsp.get_client_by_id(args.data.client_id)
-    if client and client:supports_method("textDocument/inlayHint") then
+    -- gopls hints hit a core Neovim bug (inlay_hint.lua computes an out-of-range
+    -- extmark column on lines with multi-byte chars) that spams "Invalid 'col'"
+    -- errors, so keep hints off for it until upstream fixes the clamping.
+    if client and client.name ~= "gopls" and client:supports_method("textDocument/inlayHint") then
       vim.lsp.inlay_hint.enable(true, { bufnr = args.buf })
     end
   end,

@@ -260,11 +260,7 @@ local function likwid_groups()
   return groups
 end
 
--- watchcub (github.com/fior512/bash) puts the box into a known state for
--- benchmarking - governor/boost/C-states/THP - and samples freq/temp/thread
--- placement while a binary runs, so this file doesn't have to re-implement
--- any of that itself. Not on PATH by default (see its README), hence the
--- absolute path instead of relying on `executable("watchcub")`.
+-- watchcub: sets governor/boost/THP for benchmarking, not on PATH
 local WATCHCUB = "/home/moonfloww/Projects/codebase/scripts/watchcub/watchcub.sh"
 local function watchcub_available()
   return vim.fn.executable(WATCHCUB) == 1
@@ -1056,9 +1052,7 @@ local defs = {
     end,
   },
   {
-    -- Compiler-Explorer style: compiles this TU straight to asm, no
-    -- link/execute. Distinct from "asm: disassemble"/"dump" above, which
-    -- read the already-linked (post-LTO/cross-TU-inlined) binary.
+    -- compiles TU to asm directly, no link/execute
     name = "asm: compile view",
     desc = "Compile this TU straight to annotated asm (-S -fverbose-asm), no link/execute needed",
     build = function(c)
@@ -1079,14 +1073,8 @@ local defs = {
   -- the current buffer or a built binary)
   -----------------------------------------------------------------------------
   {
-    -- GENERATE_HTML=YES since doxygen only keeps intermediate .dot graphs
-    -- around long enough to render them; the HTML site is the real artifact.
-    -- No Doxyfile setting exists for edge routing (DOT_COMMON_ATTR doesn't
-    -- reach graph-level attrs like splines), so DOT_CLEANUP=NO keeps the
-    -- .dot files, injects "splines=ortho;", and re-renders each with dot,
-    -- overwriting doxygen's straight-line SVG under the same filename.
-    -- DOT_GRAPH_MAX_NODES lowered 50->20: this, not limiting call depth,
-    -- is what actually shrinks a wide fan-out tangle.
+    -- keeps .dot files, re-renders with orthogonal routing via dot
+    -- max nodes 20: shrinks wide fan-out tangles
     name = "codebase: call graph",
     desc = "doxygen+dot call/caller/include graph (orthogonal routing, capped node count), HTML site to /tmp",
     condition_callback = function()
@@ -1133,10 +1121,7 @@ local defs = {
     end,
   },
   {
-    -- rg's own --stats footer natively answers "how many" (no hand-rolled
-    -- counting), -n gives "where" alongside it. Word-boundary only, no
-    -- trailing "(" -- catches calls, definitions, and non-call references
-    -- (e.g. taking a function's address) alike.
+    -- word-boundary match: calls, defs, and address-of alike
     name = "codebase: call sites",
     desc = "Grep all occurrences of a symbol project-wide, with a native match/file count summary",
     condition_callback = function()
@@ -1179,10 +1164,7 @@ local defs = {
         .. CTAGS_EXTRACT_RANGE_AWK
         .. "' \"$file\"); "
         .. "start=${range%% *}; end=${range#* }; "
-      -- bat reads the real file via --line-range so the gutter shows actual
-      -- line numbers, not the snippet's own. Falls back to sed+nl (no syntax
-      -- color) if bat isn't installed. --paging=never: same tty-hang risk as
-      -- --no-pager elsewhere. --theme from sync_bat_theme above.
+      -- bat shows real line numbers; falls back to sed+nl if missing
       if vim.fn.executable "bat" == 1 then
         local theme = sync_bat_theme()
         cmd = cmd .. 'bat --style=numbers --line-range="$start:$end" --language=cpp --color=always --paging=never'
@@ -1201,8 +1183,7 @@ local defs = {
   -- mca / uica: static throughput modeling on a disassembled symbol
   -----------------------------------------------------------------------------
   {
-    -- Split from the critical-path view below: aggregate stats and a
-    -- per-instruction trace don't read well mixed, and need different flags.
+    -- split from critical-path view, different flags needed
     name = "mca: throughput",
     desc = "Port pressure, dispatch/scheduler/retire stats. llvm-mca on the normalized disassembly",
     condition_callback = function()
@@ -1213,9 +1194,7 @@ local defs = {
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
       local sym = (p.symbol and p.symbol ~= "") and p.symbol or "main"
-      -- No -timeline/-instruction-info/-resource-pressure: each is a
-      -- thousands-of-lines per-instruction listing. MCA_DROP_CRITSEQ also
-      -- strips the critical-sequence table, leaving just summary + -all-stats.
+      -- drops per-instruction listings, keeps summary + all-stats
       return {
         cmd = string.format(
           "%s | %s | { echo '.intel_syntax noprefix'; cat -; } | "
@@ -1229,8 +1208,7 @@ local defs = {
     end,
   },
   {
-    -- No -all-stats: with it off, nothing follows the critical-sequence
-    -- table, so MCA_CRITSEQ_ONLY can safely filter to end of output.
+    -- no -all-stats, so critseq filter is safe to end of output
     name = "mca: critical path",
     desc = "Dependency chain that bounds throughput. llvm-mca critical-sequence view, annotated rows only",
     condition_callback = function()
@@ -1295,10 +1273,7 @@ local defs = {
     params = TYPE_PARAM,
     build = function(c, p)
       local _, ebin = resolve_bin(c, p)
-      -- pahole spams stderr with harmless DWARF-parser noise on template-heavy
-      -- C++ binaries (unhandled template value-params, missing abstract_origin
-      -- for inlined formal_parameters) - neither affects the layout it reports,
-      -- so filter both out for readability instead of scrolling past them.
+      -- filters harmless pahole DWARF-parser noise on templates
       local function quiet(cmd)
         return string.format(
           "(%s) 2>&1 | grep -Ev 'not handled in a c\\+\\+[0-9]+ CU!|abstract_origin for .* \\(formal_parameter\\)!'",
@@ -1423,16 +1398,10 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- likwid: HPC-standard grouped hardware counters (MEM/MEMREAD/MEMWRITE +
-  -- FLOPS_DP = roofline/ECM ingredients; the ECM model itself is a
-  -- hand-applied analytical formula).
+  -- likwid: grouped HPC hardware counters, roofline/ECM ingredients
   -----------------------------------------------------------------------------
   {
-    -- Pass a core RANGE, not one core: likwid-perfctr then runs/measures on
-    -- every core in it and appends a Sum/Min/Max/Avg row per metric, so
-    -- cross-core spread - the actual noise - comes straight from likwid
-    -- instead of a guess made beforehand. Default excludes the last core
-    -- (see likwid_default_core_range), matching "most cores, not all".
+    -- core range, not single core: likwid reports cross-core spread itself
     name = "likwid: perfctr",
     desc = "Grouped HPC counters (bandwidth/FLOPs/cache/energy) over a core range; the Sum/Min/Max/Avg row shows noise",
     condition_callback = function()
@@ -1503,12 +1472,7 @@ local defs = {
     end,
   },
   {
-    -- "-a" lists kernels/workgroups only when kernel is left blank, so a
-    -- benchmark run and a "what's available" listing share one action.
-    -- ~140 kernels (clcopy/copy_avx512/daxpy_sse_fma/stream_mem_avx512/...);
-    -- typing one exactly from memory isn't realistic, so kernel is an enum
-    -- read from `likwid-bench -a` itself (not hardcoded - tracks whatever
-    -- version is actually installed) instead of a free-text field.
+    -- kernel list read live from likwid-bench -a, not hardcoded
     name = "likwid: bench",
     desc = "Microbenchmark kernel, picked from likwid-bench -a's own list",
     condition_callback = function()
@@ -1764,9 +1728,7 @@ local defs = {
   -- bloaty: binary size, icache pressure, unintended inlining
   -----------------------------------------------------------------------------
   {
-    -- "symbols" works off the ELF symbol table, no debug info needed.
-    -- "compileunits" also requires DWARF and fails outright without -g,
-    -- which most binaries here lack (see the justfile hpc flags).
+    -- symbols needs no debug info; compileunits needs DWARF (-g)
     name = "bloaty: sizes",
     condition_callback = function()
       return vim.fn.executable "bloaty" == 1
@@ -1818,17 +1780,9 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- tidy: clang-tidy split into categories (standalone file, no
-  -- compile_commands.json). Each is check-only (no --fix): findings are
-  -- reviewed, not auto-applied, and every task below runs on this one file
-  -- only - never a project-wide/header-expanding sweep. See tidy_def above
-  -- for the shared command (the --header-filter/note-filtering that keeps
-  -- output scoped to this file even when it includes outside headers).
+  -- tidy: clang-tidy by category, check-only, single-file scope
   -----------------------------------------------------------------------------
-  -- UB/lifetime/bug-prone patterns: static analyzer, bugprone-*, plus the
-  -- CERT and Core Guidelines alias groups (mostly re-point at bugprone/
-  -- cppcoreguidelines checks already covered elsewhere, so overlap with
-  -- the other tidy categories is expected).
+  -- UB/lifetime patterns: analyzer, bugprone, CERT, Core Guidelines
   tidy_def(
     "safety",
     "clang-analyzer-*,bugprone-*,cert-*,cppcoreguidelines-*,-bugprone-easily-swappable-parameters",
@@ -1839,9 +1793,7 @@ local defs = {
   tidy_def("modernize", "modernize-*", "modernize-*"),
 
   -----------------------------------------------------------------------------
-  -- cppcheck: different static-analysis heuristics than clang-tidy (array
-  -- bounds, uninitialized use, portability) - worth running both. Same
-  -- category split and single-file scope as the tidy group above.
+  -- cppcheck: different static-analysis heuristics than clang-tidy
   -----------------------------------------------------------------------------
   cppcheck_def("safety", "warning,portability", "--enable=warning,portability (UB, likely bugs, non-portable constructs)"),
   cppcheck_def("performance", "performance", "--enable=performance"),
@@ -1865,16 +1817,8 @@ local defs = {
     end,
   },
   {
-    -- The include-fixer script ships alongside iwyu, named fix_includes.py
-    -- upstream but packaged as iwyu-fix-includes on Arch/EndeavourOS; pick()
-    -- covers both. It parses iwyu's own diagnostic text (printed on stderr,
-    -- hence 2>&1) to rewrite the file's #includes in place. --nocomments
-    -- is already its default (no "why" comment after each added #include);
-    -- passed explicitly since that's the point of this task, not an
-    -- incidental default. Same std flag as the report-only task above so
-    -- its analysis matches. The buffer isn't reloaded automatically
-    -- (overseer can't reach back into the editing session), so the echo
-    -- afterward is a reminder, not a no-op.
+    -- fix_includes.py / iwyu-fix-includes, rewrites #includes in place
+    -- buffer not auto-reloaded, echo is a manual reminder
     name = "lint: iwyu auto-apply",
     desc = "Runs iwyu, then rewrites this file's #includes on disk (no why-comments)",
     condition_callback = function()
@@ -1937,13 +1881,7 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- Cargo (Rust): no_buffer, not tied to the current file, since cargo
-  -- commands operate on the whole project from its root (cwd) regardless of
-  -- which .rs file is open. Always shown once `cargo` is on PATH -- not
-  -- gated on a Cargo.toml at cwd, since cwd may be a subdirectory of the
-  -- project (cargo itself walks up to find the manifest, same as this
-  -- picker should). rustaceanvim/rust-analyzer handle LSP diagnostics and
-  -- formatting separately; these are just the build/run/test loop.
+  -- Cargo (Rust): project-wide, no_buffer; build/run/test loop only
   -----------------------------------------------------------------------------
   {
     name = "Cargo: build",
@@ -2012,9 +1950,7 @@ local defs = {
     prompts = { { key = "filter", label = "Test filter (blank = all): ", required = false } },
     build = function(_, p)
       local filter = (p.filter and p.filter ~= "") and (" " .. p.filter) or ""
-      -- quickfix only catches compile errors (rustc's "-->" format); test
-      -- panics print a different shape ("thread 'x' panicked at ..."), so
-      -- there's no matching quickfix entry for those, only for a build failure.
+      -- quickfix catches build errors only, not test panics
       return { cmd = "cargo test" .. filter, components = cargo_quickfix() }
     end,
   },
@@ -2063,11 +1999,7 @@ local defs = {
   },
 
   -----------------------------------------------------------------------------
-  -- Go: no_buffer, not tied to the current file, same reasoning as the Cargo
-  -- section above -- `go` walks up to the enclosing module itself, and these
-  -- are always shown once `go` is on PATH regardless of cwd depth within the
-  -- module. gopls handles LSP diagnostics/formatting separately (see
-  -- configs/lspconfig.lua); these are just the build/run/test loop.
+  -- Go: project-wide, no_buffer; build/run/test loop only
   -----------------------------------------------------------------------------
   {
     name = "Go: build",
@@ -2194,9 +2126,7 @@ function M.setup()
   })
 
   for _, def in ipairs(defs) do
-    -- needs_bin/no_buffer defs (codebase-wide tools, or ones taking an
-    -- explicit binary) don't need a C/C++ buffer open; only compile/build
-    -- tasks reading the buffer as source require filetype cpp/c.
+    -- only compile/build defs need a cpp/c buffer open
     local skip_buffer = def.needs_bin or def.no_buffer
     local condition = skip_buffer and {} or { filetype = { "cpp", "c" } }
     if def.condition_callback then
@@ -2257,9 +2187,7 @@ function M.setup()
             or { { "on_output_quickfix", open_on_error = true }, "default" }
         end
 
-        -- First output line is the literal command; a needs_bin task also
-        -- shows the binary's build age (defs can add more via info_lines,
-        -- e.g. a snapshot's own age) so a stale artifact is obvious upfront.
+        -- shows command + binary build age, so stale artifacts are obvious
         local shell_cmd = to_shell_str(task.cmd)
         local info = { "+ " .. shorten_display(shell_cmd) }
         if def.needs_bin then
@@ -2271,9 +2199,7 @@ function M.setup()
             info[#info + 1] = shorten_display(l)
           end
         end
-        -- %s\n\n: a blank line after each preamble line (command, bin
-        -- age, any info_lines) and one more before the command's own
-        -- output starts, so the sections don't run together.
+        -- blank line between preamble and command output
         local preamble = "printf '%s\\n\\n' " .. table.concat(vim.tbl_map(vim.fn.shellescape, info), " ")
         task.cmd = preamble .. " && " .. shell_cmd
 
@@ -2281,10 +2207,7 @@ function M.setup()
       end,
     }
 
-    -- condition_callback gates overseer's own picker/:OverseerRun, but the
-    -- custom telescope picker below reads M._names directly. Without this
-    -- check, tools that aren't installed still showed up and failed with
-    -- "command not found" when picked.
+    -- filters uninstalled tools out of the custom telescope picker
     if not def.condition_callback or def.condition_callback() then
       M._names[#M._names + 1] = def.name
 
@@ -2298,17 +2221,12 @@ function M.setup()
       local group_list = M._by_group[group]
       group_list[#group_list + 1] = { name = def.name, action = action }
 
-      -- Templates with an enum_pick get the third telescope level (see
-      -- open_enum_pick in telescope_run): the choice is passed as a preset
-      -- param, so it never goes through the vim.ui.input chain below.
+      -- enum_pick gets a third telescope level, see open_enum_pick
       if def.enum_pick then
         M._enum_picks[def.name] = def.enum_pick
       end
 
-      -- needs_bin/takes_args auto-generate their prompts (binary path with
-      -- file completion, then optional args); any def can also declare its
-      -- own def.prompts (e.g. codebase: * asking for a symbol) which are
-      -- appended after. Same chain, same vim.ui.input mechanism either way.
+      -- auto-prompts (binary/args) come first, def.prompts appended after
       local prompts = {}
       if def.needs_bin then
         prompts[#prompts + 1] =
@@ -2404,10 +2322,7 @@ function M.telescope_run()
 
   local open_actions -- forward decl: open_enum_pick's <BS> handler reopens it
 
-  -- Third level (optional, per-template): pick one enum param in a picker
-  -- instead of vim.ui.input. Only likwid-perfctr registers one today (its
-  -- -g group, via def.enum_pick), but the machinery is generic. <BS> on an
-  -- empty prompt backs out to the action list, like action -> tool above.
+  -- optional 3rd telescope level: enum param picker, generic machinery
   local function open_enum_pick(name, enum, group)
     local choices = type(enum.choices) == "function" and enum.choices() or enum.choices
     if not choices or #choices == 0 then

@@ -168,18 +168,6 @@ return {
           end)
         end,
       })
-
-      -- markdown only; tex handled separately by vimtex
-      vim.api.nvim_create_autocmd("FileType", {
-        pattern = { "markdown" },
-        group = vim.api.nvim_create_augroup("markview_autosplit", { clear = true }),
-        callback = function(ev)
-          if vim.bo[ev.buf].buftype ~= "" then
-            return -- real file buffers only, skip floats/scratch/previews
-          end
-          require("markview.actions").splitOpen(ev.buf)
-        end,
-      })
     end,
   },
   {

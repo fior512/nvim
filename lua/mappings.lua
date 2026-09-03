@@ -66,6 +66,12 @@ map({ "n", "t" }, "<C-Left>", "<cmd>vertical resize -3<cr>", { desc = "Resize wi
 map({ "n", "t" }, "<C-Right>", "<cmd>vertical resize +3<cr>", { desc = "Resize window wider" })
 
 
+-- Fuzzy-searchable keymap list (matches against both the key and its desc,
+-- so e.g. typing "overseer" finds <leader>oo/<leader>ot/etc even though the
+-- literal leader key doesn't render as text). <leader>wK (NvChad default)
+-- shows the same info as a whichkey tree instead, non-fuzzy.
+map("n", "<leader>fk", "<cmd>Telescope keymaps<cr>", { desc = "telescope find keymaps" })
+
 -- Overseer: compile / run / perf / valgrind / clang-tidy / rr task runner
 map("n", "<leader>oo", function()
   require("configs.overseer").telescope_run()

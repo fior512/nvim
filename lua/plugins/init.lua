@@ -399,6 +399,21 @@ return {
       },
     },
   },
+  -- <leader>fk (mappings.lua) fuzzy-searches keymaps by key + desc, but
+  -- NvChad's own opts (nvchad.configs.telescope) never sets pickers.keymaps
+  -- -- add it here instead of replacing NvChad's telescope config outright,
+  -- so this merges into it (see configs/telescope.lua for why).
+  {
+    "nvim-telescope/telescope.nvim",
+    opts = function(_, opts)
+      opts.pickers = opts.pickers or {}
+      opts.pickers.keymaps = vim.tbl_deep_extend("force", opts.pickers.keymaps or {}, {
+        entry_maker = require("configs.telescope").keymaps_entry_maker(),
+      })
+      return opts
+    end,
+  },
+
   {
     "danymat/neogen",
     event = "VeryLazy",
@@ -411,7 +426,7 @@ return {
       -- so "cg" ("c"omment "g"enerate) is conflict-free.
       vim.keymap.set("n", "<leader>cg", function()
         require("neogen").generate()
-      end, { desc = "Neogen annotate" })
+      end, { desc = "Neogen annotate (doxygen-style for c/cpp)" })
     end,
   },
 

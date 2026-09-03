@@ -161,13 +161,15 @@ return {
       -- a stale suggestion instead.
       --
       -- Wanted behavior: Enter accepts, arrows navigate, Tab dismisses the
-      -- menu (first press) and only then falls through to a real tab/snippet
-      -- jump (second press, menu already closed).
+      -- menu (first press) and only then falls through to a real tab
+      -- (second press, menu already closed). Tab must never jump the cursor
+      -- via luasnip -- expand_or_jumpable()/jumpable() reflect global
+      -- session state (any snippet left un-exited anywhere in the buffer),
+      -- not "cursor is inside a snippet right now", so they were teleporting
+      -- the cursor unpredictably.
       opts.mapping["<Tab>"] = cmp.mapping(function(fallback)
         if cmp.visible() then
           cmp.abort()
-        elseif require("luasnip").expand_or_jumpable() then
-          require("luasnip").expand_or_jump()
         else
           fallback()
         end
@@ -176,8 +178,6 @@ return {
       opts.mapping["<S-Tab>"] = cmp.mapping(function(fallback)
         if cmp.visible() then
           cmp.abort()
-        elseif require("luasnip").jumpable(-1) then
-          require("luasnip").jump(-1)
         else
           fallback()
         end
@@ -250,8 +250,13 @@ return {
   },
   {
     "nvim-treesitter/nvim-treesitter",
-    opts = {
-      ensure_installed = {
+    branch = "main",
+    build = ":TSUpdate",
+    -- On the `main` branch, setup() only understands `install_dir` --
+    -- `ensure_installed` in opts is silently ignored (nothing reads it).
+    -- Parsers have to be installed explicitly.
+    config = function()
+      require("nvim-treesitter").install {
         "vim", "lua", "vimdoc",
         "html", "css",
         "cpp", "c",
@@ -262,8 +267,8 @@ return {
         "typescript", "tsx",
         "cuda",
         "latex",
-      },
-    },
+      }
+    end,
   },
 
   -- Markdown/LaTeX visualizer: real split window (source left, rendered

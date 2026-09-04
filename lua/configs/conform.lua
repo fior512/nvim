@@ -42,6 +42,8 @@ local options = {
   formatters = {
     min_blank_lines_brace = { format = min_blank_lines(brace_closer) },
     min_blank_lines_lua = { format = min_blank_lines(lua_closer) },
+    -- forces 2-space indent, overrides any project rustfmt.toml
+    rustfmt = { prepend_args = { "--config", "tab_spaces=2" } },
   },
   formatters_by_ft = {
     lua = { "stylua", "min_blank_lines_lua" },

@@ -1,5 +1,5 @@
--- rustfmt default tab_spaces = 4
-vim.bo.tabstop = 4
-vim.bo.shiftwidth = 4
-vim.bo.softtabstop = 4
+-- forced to 2 via rustfmt.toml override in conform.lua
+vim.bo.tabstop = 2
+vim.bo.shiftwidth = 2
+vim.bo.softtabstop = 2
 vim.bo.expandtab = true

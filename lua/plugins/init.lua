@@ -264,7 +264,7 @@ return {
       parser = "compact", -- compact tree style
     },
     keys = {
-      { "<leader>u", "<cmd>lua require('undotree').toggle()<cr>", desc = "Undo tree with diff preview" },
+      { "<leader>ut", "<cmd>lua require('undotree').toggle()<cr>", desc = "Undo tree with diff preview" },
     },
   },
 

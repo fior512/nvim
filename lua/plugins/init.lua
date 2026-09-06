@@ -36,6 +36,8 @@ return {
     },
     opts = function(_, opts)
       local cmp = require "cmp"
+      -- registers the nvim_lsp source; cmp-nvim-lsp needs this call
+      require("cmp_nvim_lsp").setup()
       opts.sources = cmp.config.sources({
         { name = "nvim_lsp" },
         { name = "luasnip" },

@@ -33,19 +33,8 @@ end
 -- wide split needed: legibility depends on cell-box size, not dpi
 local PDF_WIN_WIDTH_FRAC = 0.7
 
---- opens PDF split, or refreshes it if already open
-local function show_pdf()
-  local path = pdf_path()
-  if not path or vim.fn.filereadable(path) == 0 then
-    return
-  end
-
-  local win = find_pdf_win(path)
-  if win then
-    Snacks.image.buf.attach(vim.api.nvim_win_get_buf(win))
-    return
-  end
-
+--- opens a PDF split for `path`
+local function open_pdf(path)
   local src_win = vim.api.nvim_get_current_win()
   vim.cmd "vsplit"
   -- resize before :edit, so convert pipeline sizes correctly
@@ -54,19 +43,69 @@ local function show_pdf()
   vim.api.nvim_set_current_win(src_win)
 end
 
+-- snacks caches renders by pdf path, not mtime: drop the stale png
+local function invalidate_image_cache(path)
+  local base = vim.fn.fnamemodify(path, ":t:r"):gsub("[^%w%.]+", "-")
+  for _, file in ipairs(vim.fn.glob(
+    Snacks.image.config.cache .. "/*-" .. base .. ".*",
+    true,
+    true
+  )) do
+    vim.fn.delete(file)
+  end
+end
+
+--- re-renders the PDF buffer if its split is currently open
+local function refresh_pdf()
+  local path = pdf_path()
+  if not path or vim.fn.filereadable(path) == 0 then
+    return
+  end
+  local win = find_pdf_win(path)
+  if win then
+    invalidate_image_cache(path)
+    -- image.new() memoizes by output path in memory too; drop it
+    Snacks.image.image.clear()
+    Snacks.image.buf.attach(vim.api.nvim_win_get_buf(win))
+  end
+end
+
+--- <leader>mv: close split if open, else start compile and open it
+local function toggle_pdf()
+  local path = pdf_path()
+  if path then
+    local win = find_pdf_win(path)
+    if win then
+      vim.api.nvim_win_close(win, false)
+      return
+    end
+  end
+
+  vim.fn["vimtex#compiler#start"]()
+  path = pdf_path()
+  if path and vim.fn.filereadable(path) == 1 then
+    open_pdf(path)
+  end
+end
+
 local group = vim.api.nvim_create_augroup("vimtex_inline_pdf", { clear = true })
 
--- <leader>mv: start compile (idempotent), then show/refresh PDF
 vim.api.nvim_create_autocmd("FileType", {
   pattern = "tex",
   group = group,
   callback = function(ev)
-    vim.keymap.set("n", "<leader>mv", function()
-      vim.fn["vimtex#compiler#start"]()
-      show_pdf()
-    end, { buffer = ev.buf, desc = "Compile (if needed) + show rendered PDF" })
+    vim.keymap.set(
+      "n",
+      "<leader>mv",
+      toggle_pdf,
+      { buffer = ev.buf, desc = "Toggle rendered PDF split" }
+    )
   end,
 })
 
--- no auto-refresh on compile success: races mid-flight conversions
--- press <leader>mv again after save to refresh manually
+-- redraw the split each time latexmk finishes a compile
+vim.api.nvim_create_autocmd("User", {
+  pattern = "VimtexEventCompileSuccess",
+  group = group,
+  callback = refresh_pdf,
+})

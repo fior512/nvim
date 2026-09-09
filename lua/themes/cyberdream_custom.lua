@@ -1,24 +1,17 @@
--- cyberdream.nvim palette, recoloured, ported to base46
--- muted DNA: every code colour under chroma 0.075
--- hue marks the role, lightness marks the weight
--- amber marks definitions, yellow control flow, mauve returns
--- dim grey holds scaffolding: let, pub, mut, operators
--- old blue and green survive on meaning only
-
 local M = {}
 
 M.base_30 = {
   white         = "#dcdcd4",
   darker_black  = "#020202",
-  black         = "#040404", -- cyberdream bg
-  black2        = "#090909", -- cyberdream bg_alt
+  black         = "#040404",
+  black2        = "#090909",
   one_bg        = "#0f0f0f",
-  one_bg2       = "#141414", -- cyberdream bg_highlight
+  one_bg2       = "#141414",
   one_bg3       = "#1a1a1a",
   grey          = "#282828",
   grey_fg       = "#4c4b3c",
   grey_fg2      = "#5c5a46",
-  light_grey    = "#7b8496", -- cyberdream grey
+  light_grey    = "#7b8496",
   red           = "#ff6e5e",
   baby_pink     = "#ecd3a0",
   pink          = "#ecd3a0",
@@ -40,7 +33,6 @@ M.base_30 = {
   folder_bg     = "#b5a494",
 }
 
--- base08/05/0F collapse to fg on purpose; see polish_hl fixups
 M.base_16 = {
   base00 = "#040404",
   base01 = "#090909",
@@ -60,25 +52,16 @@ M.base_16 = {
   base0F = "#dcdcd4",
 }
 
--- group overrides keyed by base46 integration name/load order
 M.polish_hl = {
   defaults = {
-    -- base46 puts Comment on light_grey; cyberdream dims it much further so
-    -- comments stay legible against #040404 without competing with code
     Comment = { fg = "#4c4b3c", italic = true },
     Debug = { fg = "#ffbd5e" },
     Exception = { fg = "#b28aa4" },
-    -- println!/macros: soft-gold accent, pinned on every path that can
-    -- resolve a macro (plain syntax, treesitter, LSP semantic tokens)
     Macro = { fg = "#6ca5a0" },
     NormalFloat = { bg = "#040404" },
-    -- base46 ships MatchParen as { link = "MatchWord" }, and a deep merge
-    -- cannot break an existing link -- so colour MatchWord and let
-    -- MatchParen follow it
     MatchWord = { fg = "#ecd3a0", bg = "#141414" },
   },
 
-  -- built dynamically, load after "defaults"
   statusline = {
     StatusLine = { fg = "#dcdcd4", bg = "#040404" },
     StatusLineNC = { fg = "#7b8496", bg = "#040404" },
@@ -92,12 +75,9 @@ M.polish_hl = {
 
   syntax = {
     Boolean = { fg = "#bd8c70" },
-    -- hardcoded/literal values (numbers, consts, chars) match strings:
-    -- Rust's own brand orange, darkened so it does not read as bright
     Character = { fg = "#bd8c70" },
     Define = { fg = "#6ca5a0" },
     Include = { fg = "#6ca5a0" },
-    -- for/in/while/loop/match/else share the control flow teal
     Label = { fg = "#ecd3a0" },
     Repeat = { fg = "#ecd3a0" },
     Operator = { fg = "#8b857d" },
@@ -108,8 +88,6 @@ M.polish_hl = {
     Structure = { fg = "#b5a494" },
     Tag = { fg = "#ecd3a0" },
     Todo = { fg = "#b5a494", bg = "NONE", bold = true },
-    -- doc comments (///, //!, /** */) a touch brighter than plain //
-    -- comments, but only slightly -- not a hard contrast jump
     SpecialComment = { fg = "#5c5a46", italic = true },
   },
 
@@ -117,7 +95,6 @@ M.polish_hl = {
     ["@variable.builtin"] = { fg = "#6ca5a0" },
     ["@character"] = { fg = "#bd8c70" },
     ["@character.special"] = { fg = "#6ca5a0" },
-    -- path segments recede, the function name carries the meaning
     ["@module"] = { fg = "#8b857d" },
     ["@namespace"] = { fg = "#8b857d" },
     ["@constant.macro"] = { fg = "#6ca5a0" },
@@ -150,17 +127,12 @@ M.polish_hl = {
   },
 
   lsp = {
-    -- Neovim links DiagnosticUnnecessary to Comment by default, which under
-    -- this palette makes unused code identical to a comment
     DiagnosticUnnecessary = { fg = "#7b8496", italic = false },
     DiagnosticInfo = { fg = "#5ea1ff" },
     DiagnosticHint = { fg = "#ecd3a0" },
     LspReferenceText = { bg = "#141414" },
     LspReferenceRead = { bg = "#141414" },
     LspReferenceWrite = { bg = "#141414" },
-    -- inline "cues" (inlay hints, virtual diagnostics) as dark and muted as
-    -- the rest of the palette; signs and underlines on actual errors keep
-    -- full-strength colour so real problems still stand out
     LspInlayHint = { fg = "#383838", bg = "NONE", italic = true },
     DiagnosticVirtualTextError = { fg = "#604341", bg = "NONE", italic = true },
     DiagnosticVirtualTextWarn = { fg = "#544c3e", bg = "NONE", italic = true },
@@ -169,7 +141,6 @@ M.polish_hl = {
   },
 }
 
--- diffed vs old cyberdream.nvim groups, merged into polish_hl
 local ui_deltas = {
   defaults = {
     Bold = { fg = "#7b8496", bold = true, italic = true },
@@ -374,24 +345,20 @@ local ui_deltas = {
     ["@constant.builtin"] = { fg = "#bd8c70" },
     ["@constant.macro"] = { fg = "#6ca5a0" },
     ["@function.macro"] = { fg = "#6ca5a0" },
-    -- match @keyword.import.go, which links to Include
     ["@function"] = { fg = "#6ca5a0" },
     ["@function.call"] = { fg = "#6ca5a0" },
-    -- unset otherwise default-links to Function (pink), not @function
     ["@function.method"] = { fg = "#6ca5a0" },
     ["@function.method.call"] = { fg = "#6ca5a0" },
     ["@keyword"] = { fg = "#8b857d" },
     ["@keyword.conditional"] = { fg = "#ecd3a0" },
     ["@keyword.conditional.ternary"] = { fg = "#ecd3a0" },
-    -- pub/mut/const/static; @keyword.storage is the dead old name
     ["@keyword.modifier"] = { fg = "#8b857d" },
-    ["@keyword.return"] = { fg = "#b28aa4" },
+    ["@keyword.return"] = { fg = "#870707" },
     ["@type"] = { fg = "#b5a494" },
     ["@keyword.coroutine"] = { fg = "#b28aa4" },
     ["@keyword.exception"] = { fg = "#b28aa4" },
     ["@keyword.operator"] = { fg = "#8b857d" },
     ["@keyword.repeat"] = { fg = "#ecd3a0" },
-    -- definitions share keyword amber, bold separates them
     ["@keyword.function"] = { fg = "#ffbd5e", bold = true },
     ["@keyword.type"] = { fg = "#ffbd5e", bold = true },
     ["@label"] = { fg = "#ecd3a0" },
@@ -406,7 +373,7 @@ local ui_deltas = {
     ["@markup.link.label.markdown_inline"] = { fg = "#ecd3a0" },
     ["@markup.link.markdown_inline"] = { fg = "#c8b498" },
     ["@markup.link.url"] = { fg = "#b5a494", underline = true },
-    ["@markup.list.checked"] = { fg = "#bd8c70", bold = true },
+    ["@markup.list.checked"] = { fg = "#32b000", bold = true },
     ["@markup.list.unchecked"] = { fg = "#b5a494", bold = true },
     ["@markup.quote"] = { fg = "#4c4b3c", bg = "NONE", italic = true },
     ["@markup.strong"] = { fg = "#ecd3a0", bold = true },
@@ -421,14 +388,12 @@ local ui_deltas = {
     ["@string.special"] = { fg = "#6ca5a0" },
     ["@symbol"] = { fg = "#dcdcd4" },
     ["@tag"] = { fg = "#ffbd5e" },
-    -- builtin types join the type tier, they blocked the warm band
     ["@type.builtin"] = { fg = "#b5a494" },
     ["@type.definition"] = { fg = "#b5a494" },
     ["@type.qualifier"] = { fg = "#ffbd5e" },
     ["@variable.builtin"] = { fg = "#6ca5a0" },
   },
   lsp = {
-    -- gopls semantic tokens default-link to Function (pink), not @function
     ["@lsp.type.function"] = { fg = "#6ca5a0" },
     ["@lsp.type.method"] = { fg = "#6ca5a0" },
     DiagnosticHint = { fg = "#ecd3a0" },
@@ -479,20 +444,18 @@ local ui_deltas = {
   },
 }
 
--- readability pass, applied last, wins over tables above
--- IblChar/IblScopeChar are the real indent-guide groups
 local readability = {
   defaults = {
-    LineNr = { fg = "#535353" },       -- gutter digits, was #282828
-    CursorLineNr = { fg = "#bdbdbd" }, -- digit on the cursor line, was #7b8496
-    Whitespace = { fg = "#2f2f2f" },   -- listchars, was #141414
+    LineNr = { fg = "#535353" },
+    CursorLineNr = { fg = "#bdbdbd" },
+    Whitespace = { fg = "#2f2f2f" },
     IblIndent = { fg = "#2f2f2f" },
     IblScope = { fg = "#565656" },
   },
 
   blankline = {
-    IblChar = { fg = "#2f2f2f" },      -- indent guide, was #141414
-    IblScopeChar = { fg = "#565656" }, -- current-scope guide, was #282828
+    IblChar = { fg = "#2f2f2f" },
+    IblScopeChar = { fg = "#565656" },
   },
 }
 

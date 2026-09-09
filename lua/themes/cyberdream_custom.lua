@@ -374,6 +374,12 @@ local ui_deltas = {
     ["@constant.builtin"] = { fg = "#bd8c70" },
     ["@constant.macro"] = { fg = "#6ca5a0" },
     ["@function.macro"] = { fg = "#6ca5a0" },
+    -- match @keyword.import.go, which links to Include
+    ["@function"] = { fg = "#6ca5a0" },
+    ["@function.call"] = { fg = "#6ca5a0" },
+    -- unset otherwise default-links to Function (pink), not @function
+    ["@function.method"] = { fg = "#6ca5a0" },
+    ["@function.method.call"] = { fg = "#6ca5a0" },
     ["@keyword"] = { fg = "#8b857d" },
     ["@keyword.conditional"] = { fg = "#ecd3a0" },
     ["@keyword.conditional.ternary"] = { fg = "#ecd3a0" },
@@ -422,6 +428,9 @@ local ui_deltas = {
     ["@variable.builtin"] = { fg = "#6ca5a0" },
   },
   lsp = {
+    -- gopls semantic tokens default-link to Function (pink), not @function
+    ["@lsp.type.function"] = { fg = "#6ca5a0" },
+    ["@lsp.type.method"] = { fg = "#6ca5a0" },
     DiagnosticHint = { fg = "#ecd3a0" },
     DiagnosticInfo = { fg = "#5ea1ff" },
     LspInlayHint = { fg = "#383838", bg = "NONE", italic = true },

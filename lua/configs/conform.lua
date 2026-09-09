@@ -1,4 +1,4 @@
-local MIN_BLANK_LINES = 3
+local MIN_BLANK_LINES = 2
 
 -- pads blank lines after each closer to MIN_BLANK_LINES
 local function min_blank_lines(is_closer)

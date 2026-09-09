@@ -19,6 +19,22 @@ return {
     opts = require "configs.conform",
   },
 
+  -- auto-regenerates ./tags in the background; replaces manual <leader>ct
+  {
+    "ludovicchabant/vim-gutentags",
+    event = { "BufReadPost", "BufNewFile" },
+    init = function()
+      vim.g.gutentags_add_default_project_roots = false
+      vim.g.gutentags_project_root = { ".git", "Cargo.toml", "go.mod", "CMakeLists.txt" }
+      vim.g.gutentags_ctags_tagfile = "tags"
+      vim.g.gutentags_generate_on_new = true
+      vim.g.gutentags_generate_on_missing = true
+      vim.g.gutentags_generate_on_write = true
+      vim.g.gutentags_generate_on_empty_buffer = false
+      vim.g.gutentags_ctags_exclude = { ".git", "build", "target", "node_modules" }
+    end,
+  },
+
   {
     "neovim/nvim-lspconfig",
     event = { "BufReadPre", "BufNewFile" },
@@ -27,62 +43,71 @@ return {
     end,
   },
 
+  -- replaced by blink.cmp below; kept disabled so lazy still resolves the
+  -- NvChad base spec instead of erroring on an unknown plugin name
+  { "hrsh7th/nvim-cmp", enabled = false },
+
+  -- snippets still feed blink.cmp; kept detached from the old cmp glue
+  {
+    "L3MON4D3/LuaSnip",
+    event = "InsertEnter",
+    dependencies = "rafamadriz/friendly-snippets",
+    opts = { history = true, updateevents = "TextChanged,TextChangedI" },
+    config = function(_, opts)
+      require("luasnip").config.set_config(opts)
+      require "nvchad.configs.luasnip"
+    end,
+  },
+  {
+    "windwp/nvim-autopairs",
+    event = "InsertEnter",
+    opts = {},
+  },
+
   -- cross-file suggestions via ctags, needs `tags` file
   -- two priority groups: lsp+snippets first, buffer+tags fallback
   {
-    "hrsh7th/nvim-cmp",
+    "saghen/blink.cmp",
+    event = "InsertEnter",
+    version = "1.*",
     dependencies = {
+      "rafamadriz/friendly-snippets",
       "quangnguyen30192/cmp-nvim-tags",
+      { "saghen/blink.compat", version = "2.*", lazy = true, opts = {} },
     },
-    opts = function(_, opts)
-      local cmp = require "cmp"
-      -- registers the nvim_lsp source; cmp-nvim-lsp needs this call
-      require("cmp_nvim_lsp").setup()
-      opts.sources = cmp.config.sources({
-        { name = "nvim_lsp" },
-        { name = "luasnip" },
-        { name = "nvim_lua" },
-        { name = "async_path" },
-      }, {
-        { name = "buffer" },
-        { name = "tags" },
-      })
-
-      -- Tab dismisses menu first, indents second; never jumps via luasnip
-      opts.mapping["<Tab>"] = cmp.mapping(function(fallback)
-        if cmp.visible() then
-          cmp.abort()
-        else
-          fallback()
-        end
-      end, { "i", "s" })
-
-      opts.mapping["<S-Tab>"] = cmp.mapping(function(fallback)
-        if cmp.visible() then
-          cmp.abort()
-        else
-          fallback()
-        end
-      end, { "i", "s" })
-
-      opts.mapping["<Up>"] = cmp.mapping(function(fallback)
-        if cmp.visible() then
-          cmp.select_prev_item()
-        else
-          fallback()
-        end
-      end, { "i" })
-
-      opts.mapping["<Down>"] = cmp.mapping(function(fallback)
-        if cmp.visible() then
-          cmp.select_next_item()
-        else
-          fallback()
-        end
-      end, { "i" })
-
-      return opts
-    end,
+    opts = {
+      appearance = { nerd_font_variant = "mono" },
+      completion = {
+        -- lets clangd/gopls/rust-analyzer insert the missing import
+        accept = { auto_brackets = { enabled = true } },
+        menu = { auto_show = true },
+        documentation = { auto_show = true },
+        ghost_text = { enabled = true },
+      },
+      signature = { enabled = true },
+      snippets = { preset = "luasnip" },
+      sources = {
+        default = { "lsp", "path", "snippets", "buffer", "tags" },
+        providers = {
+          tags = {
+            name = "tags",
+            module = "blink.compat.source",
+            score_offset = -3,
+          },
+        },
+      },
+      -- Tab dismisses menu first, indents second; never jumps via snippet
+      keymap = {
+        preset = "none",
+        ["<C-space>"] = { "show", "show_documentation", "hide_documentation" },
+        ["<CR>"] = { "accept", "fallback" },
+        ["<Tab>"] = { "hide", "fallback" },
+        ["<S-Tab>"] = { "hide", "fallback" },
+        ["<Up>"] = { "select_prev", "fallback" },
+        ["<Down>"] = { "select_next", "fallback" },
+        ["<C-e>"] = { "hide", "fallback" },
+      },
+    },
   },
   -- full document LaTeX preview: latexmk compiles, vimtex syncs okular
   {
@@ -104,6 +129,9 @@ return {
             ["rust-analyzer"] = {
               check = {
                 command = "clippy", -- runs clippy instead of cargo check on save
+              },
+              completion = {
+                autoimport = { enable = true }, -- import path on accept
               },
               inlayHints = {
                 bindingModeHints = { enable = true },

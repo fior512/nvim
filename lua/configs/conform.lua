@@ -50,7 +50,7 @@ local options = {
     c = { "clang-format", "min_blank_lines_brace" },
     cpp = { "clang-format", "min_blank_lines_brace" },
     rust = { "rustfmt", "min_blank_lines_brace" },
-    go = { "gofumpt", "min_blank_lines_brace" },
+    go = { "goimports", "gofumpt", "min_blank_lines_brace" },
   },
 }
 

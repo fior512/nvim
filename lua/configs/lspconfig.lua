@@ -1,5 +1,12 @@
 require("nvchad.configs.lspconfig").defaults()
 
+-- blink.cmp needs its own capabilities merged over nvchad's defaults
+vim.lsp.config("*", {
+  capabilities = require("blink.cmp").get_lsp_capabilities(
+    require("nvchad.configs.lspconfig").capabilities
+  ),
+})
+
 -- force tag completion to read tags file, not LSP
 vim.lsp.config("*", {
   on_attach = function(_, bufnr)
@@ -43,6 +50,8 @@ vim.lsp.config("gopls", {
         unusedparams = true,
       },
       staticcheck = true,
+      completeUnimported = true, -- suggest symbols from packages not yet imported
+      usePlaceholders = true,
       hints = {
         assignVariableTypes = true,
         compositeLiteralFields = true,

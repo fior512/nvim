@@ -73,20 +73,6 @@ map("n", "<leader>uc", function()
   require("utils.const_fold").toggle(0)
 end, { desc = "Toggle constant-expression fold hints" })
 
--- rebuilds project-wide ctags index, powers cmp-nvim-tags
-map("n", "<leader>ct", function()
-  local cwd = vim.fn.getcwd()
-  vim.system({ "ctags", "-R", "." }, { cwd = cwd }, function(obj)
-    local ok = obj.code == 0
-    vim.schedule(function()
-      vim.notify(
-        "ctags: index " .. (ok and "refreshed" or "FAILED") .. " in " .. cwd,
-        ok and vim.log.levels.INFO or vim.log.levels.ERROR
-      )
-    end)
-  end)
-end, { desc = "Regenerate ctags index (project-wide)" })
-
 -- toggles markdown split preview; tex uses its own <leader>mv
 map("n", "<leader>mv", "<cmd>Markview splitToggle<cr>", { desc = "Toggle markdown split preview" })
 

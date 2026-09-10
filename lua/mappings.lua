@@ -46,12 +46,8 @@ map("n", "<S-h>", function()
   require("nvchad.tabufline").prev()
 end, { desc = "Buffer goto prev" })
 
--- bound in n and t mode: terminal-mode buffers ignore n-only maps
-map({ "n", "t" }, "<C-Up>", "<cmd>resize -3<cr>", { desc = "Resize window shorter" })
-map({ "n", "t" }, "<C-Down>", "<cmd>resize +3<cr>", { desc = "Resize window taller" })
-map({ "n", "t" }, "<C-Left>", "<cmd>vertical resize -3<cr>", { desc = "Resize window narrower" })
-map({ "n", "t" }, "<C-Right>", "<cmd>vertical resize +3<cr>", { desc = "Resize window wider" })
-
+-- resize moved to smart-splits.nvim on <A-arrows>, see plugins/init.lua
+-- frees <C-Left/Right> in terminal mode for the shell's own word motion
 
 -- fuzzy keymap search by key or desc
 map("n", "<leader>fk", "<cmd>Telescope keymaps<cr>", { desc = "telescope find keymaps" })

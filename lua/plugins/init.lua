@@ -325,4 +325,18 @@ return {
       multiline_threshold = 1,
     },
   },
+
+  -- window resize; replaces manual <C-arrows> maps, frees them for
+  -- the shell's word motion inside terminal buffers
+  {
+    "mrjones2014/smart-splits.nvim",
+    event = "VeryLazy",
+    opts = {},
+    keys = {
+      { "<A-Left>", function() require("smart-splits").resize_left(3) end, mode = { "n", "t" }, desc = "Resize window narrower" },
+      { "<A-Right>", function() require("smart-splits").resize_right(3) end, mode = { "n", "t" }, desc = "Resize window wider" },
+      { "<A-Up>", function() require("smart-splits").resize_up(3) end, mode = { "n", "t" }, desc = "Resize window shorter" },
+      { "<A-Down>", function() require("smart-splits").resize_down(3) end, mode = { "n", "t" }, desc = "Resize window taller" },
+    },
+  },
 }

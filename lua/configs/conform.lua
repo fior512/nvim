@@ -30,6 +30,9 @@ end
 
 -- brace-style declaration end
 local function brace_closer(line)
+  if line:match "^func .*{.*}%s*$" then
+    return false
+  end
   return line:match "^}" ~= nil or line:match "^%S.*{.*}%s*$" ~= nil
 end
 

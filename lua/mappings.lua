@@ -52,6 +52,10 @@ end, { desc = "Buffer goto prev" })
 -- fuzzy keymap search by key or desc
 map("n", "<leader>fk", "<cmd>Telescope keymaps<cr>", { desc = "telescope find keymaps" })
 
+-- swaps nvchad defaults: ff <-> fw
+map("n", "<leader>ff", "<cmd>Telescope live_grep<cr>", { desc = "telescope live grep" })
+map("n", "<leader>fw", "<cmd>Telescope find_files<cr>", { desc = "telescope find files" })
+
 -- Overseer: compile / run / perf / valgrind / clang-tidy / rr task runner
 map("n", "<leader>oo", function()
   require("configs.overseer").telescope_run()

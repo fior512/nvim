@@ -37,6 +37,14 @@ vim.api.nvim_create_autocmd("LspTokenUpdate", {
   end,
 })
 
+-- keeps the todo.nvim scratch file out of the tabufline buffer list
+vim.api.nvim_create_autocmd("BufReadPost", {
+  pattern = "*/.TODO.md",
+  callback = function(ev)
+    vim.bo[ev.buf].buflisted = false
+  end,
+})
+
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
     local client = vim.lsp.get_client_by_id(args.data.client_id)
